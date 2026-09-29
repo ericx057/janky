@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -275,6 +276,64 @@ func TestMultiScenarioRun(t *testing.T) {
 		if actions["ticket"] > 0 && actions["ticket"] != 1 {
 			t.Fatalf("support workflow broken: %#v", actions)
 		}
+	}
+}
+
+func TestNamedTargetRouting(t *testing.T) {
+	var mu sync.Mutex
+	var routes []string
+	target := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var event map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+				t.Errorf("decode %s: %v", name, err)
+				return
+			}
+			mu.Lock()
+			routes = append(routes, name+":"+event["action"].(string))
+			mu.Unlock()
+		}))
+	}
+	sales := target("sales")
+	defer sales.Close()
+	support := target("support")
+	defer support.Close()
+	app := httptest.NewServer(NewServer(nil))
+	defer app.Close()
+	response, created := postJSON(t, app.Client(), app.URL+"/runs", map[string]any{
+		"targets":  map[string]any{"sales": sales.URL, "support": support.URL},
+		"think_ms": 0, "jitter_ms": 0, "retries": 0,
+		"scenarios": []any{
+			map[string]any{"name": "sales", "agents": 1, "target": "sales", "profiles": []any{map[string]any{}}, "workflow": []any{
+				map[string]any{"action": "lead"}, map[string]any{"action": "ticket", "target": "support"}}},
+			map[string]any{"name": "support", "agents": 1, "target": "support", "profiles": []any{map[string]any{}}, "workflow": []any{
+				map[string]any{"action": "reply"}}},
+		},
+	})
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("create run: %d %#v", response.StatusCode, created)
+	}
+	run := waitRun(t, app.Client(), app.URL, created["run_id"].(string))
+	if field(t, run, "agents")["completed"] != float64(2) {
+		t.Fatalf("run: %#v", run)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	slices.Sort(routes)
+	if !slices.Equal(routes, []string{"sales:lead", "support:reply", "support:ticket"}) {
+		t.Fatalf("routes: %#v", routes)
+	}
+}
+
+func TestDirectInvokeRejectsNamedTargetSelector(t *testing.T) {
+	app := httptest.NewServer(NewServer(nil))
+	defer app.Close()
+	response, _ := postJSON(t, app.Client(), app.URL+"/agents/alice/invoke", map[string]any{
+		"target_url": "http://127.0.0.1:1234",
+		"workflow":   []any{map[string]any{"action": "read", "target": "other"}},
+	})
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("direct invoke accepted named target: %d", response.StatusCode)
 	}
 }
 

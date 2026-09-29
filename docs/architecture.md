@@ -16,7 +16,7 @@ Fleet runs and direct agents can operate at the same time. Active runs remain qu
 
 The control server binds to `127.0.0.1:<port>`. Target and telemetry URLs must use HTTP(S) and a hostname in the allowlist. By default, that allowlist contains `127.0.0.1`, `localhost`, and `::1`; `ALLOWED_TARGET_HOSTS` replaces it with a comma-separated list. Requests do not use environment proxies and redirects are not followed.
 
-Treat the control API as trusted local tooling. It has no remote authentication layer. Only expose it in environments where callers are trusted. Target requests go to one supplied URL and host/port can be shared across all agents; connection reuse and HTTP version negotiation are handled by Go's HTTP client.
+Treat the control API as trusted local tooling. It has no remote authentication layer. Only expose it in environments where callers are trusted. Fleet steps resolve to a top-level URL, a scenario target, or a step target before the run starts. Direct agent invocations accept a single `target_url`. Connection reuse and HTTP version negotiation are handled by Go's HTTP client.
 
 ## API surface
 

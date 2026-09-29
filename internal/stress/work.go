@@ -238,7 +238,11 @@ func (s *server) runAgent(run *runState, config runConfig, index, profileIndex i
 		if config.Name != "" {
 			event["scenario"] = config.Name
 		}
-		if !s.dispatch(config.TargetURL, event, item, config.TimeoutMS, config.Retries, run) {
+		target := config.TargetURL
+		if item.TargetURL != "" {
+			target = item.TargetURL
+		}
+		if !s.dispatch(target, event, item, config.TimeoutMS, config.Retries, run) {
 			succeeded = false
 			break
 		}
@@ -308,6 +312,7 @@ func (s *server) runFleet(run *runState, config runConfig) {
 			agentConfig.Name = scenario.Name
 			agentConfig.Profiles = scenario.Profiles
 			agentConfig.Workflow = scenario.Workflow
+			agentConfig.TargetURL = scenario.TargetURL
 			profileIndex = positions[slot]
 			positions[slot]++
 			slot = (slot + 1) % len(config.Scenarios)

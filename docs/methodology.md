@@ -4,9 +4,9 @@ Janky measures an HTTP service from the client side by running scripted workflow
 
 ## Define a workload
 
-Each fleet run includes a target URL, number of agents, concurrency cap, arrival rate, optional profiles, and ordered workflow. Profiles rotate across agents. Every agent attempts each workflow step in order and stops at its first final failure.
+Each fleet run includes a target URL or named targets, number of agents, concurrency cap, arrival rate, optional profiles, and ordered workflow. Profiles rotate across agents. Every agent attempts each workflow step in order and stops at its first final failure.
 
-Each target POST contains a workflow ID, one-based step number, action, agent ID and profile, and the step input. All workflow steps can use the same endpoint; the target adapter can route by `action`.
+Each target POST contains a workflow ID, one-based step number, action, agent ID and profile, and the step input. Steps can use one endpoint or select named targets; a target adapter can route by `action`.
 
 ## Pace and bound traffic
 

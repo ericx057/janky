@@ -20,13 +20,15 @@ type step struct {
 	Action       string
 	Input        map[string]any
 	ExpectStatus []int
+	TargetURL    string
 }
 
 type scenarioConfig struct {
-	Name     string
-	Agents   int
-	Profiles []map[string]any
-	Workflow []step
+	Name      string
+	Agents    int
+	Profiles  []map[string]any
+	Workflow  []step
+	TargetURL string
 }
 
 type runConfig struct {
@@ -75,11 +77,18 @@ func parseScenarios(value any) ([]scenarioConfig, int, error) {
 		if err != nil {
 			return nil, 0, err
 		}
+		target := ""
+		if value, present := item["target"]; present {
+			target, ok = value.(string)
+			if !ok || !actionPattern.MatchString(target) {
+				return nil, 0, errors.New("scenario target must be a valid target name")
+			}
+		}
 		if agents > math.MaxInt-total {
 			return nil, 0, errors.New("total scenario agents exceeds the supported range")
 		}
 		total += agents
-		scenarios = append(scenarios, scenarioConfig{Name: name, Agents: agents, Profiles: profiles, Workflow: workflow})
+		scenarios = append(scenarios, scenarioConfig{Name: name, Agents: agents, Profiles: profiles, Workflow: workflow, TargetURL: target})
 	}
 	return scenarios, total, nil
 }
@@ -142,7 +151,7 @@ func parseWorkflow(value any) ([]step, error) {
 		return nil, errors.New("workflow must contain at least one step")
 	}
 	workflow := make([]step, len(items))
-	invalid := errors.New("workflow steps need an action, optional input object, and optional expect_status array")
+	invalid := errors.New("workflow steps need an action, optional input object, optional expect_status array, and optional target name")
 	for index, item := range items {
 		object, ok := item.(map[string]any)
 		if !ok {
@@ -160,6 +169,13 @@ func parseWorkflow(value any) ([]step, error) {
 			}
 		}
 		var expected []int
+		target := ""
+		if value, present := object["target"]; present {
+			target, ok = value.(string)
+			if !ok || !actionPattern.MatchString(target) {
+				return nil, invalid
+			}
+		}
 		if value := object["expect_status"]; value != nil {
 			statuses, ok := value.([]any)
 			if !ok || len(statuses) < 1 {
@@ -177,7 +193,7 @@ func parseWorkflow(value any) ([]step, error) {
 				expected = append(expected, int(value))
 			}
 		}
-		workflow[index] = step{action, input, expected}
+		workflow[index] = step{Action: action, Input: input, ExpectStatus: expected, TargetURL: target}
 	}
 	return workflow, nil
 }
@@ -198,11 +214,47 @@ func targetURL(value any, allowed map[string]bool) (string, error) {
 	return u.String(), nil
 }
 
+func resolveTargets(workflow []step, fallback string, targets map[string]string) error {
+	for index := range workflow {
+		if workflow[index].TargetURL != "" {
+			url := targets[workflow[index].TargetURL]
+			if url == "" {
+				return fmt.Errorf("unknown target %q", workflow[index].TargetURL)
+			}
+			workflow[index].TargetURL = url
+		} else if fallback == "" {
+			return errors.New("each workflow step needs a target or target_url")
+		} else {
+			workflow[index].TargetURL = fallback
+		}
+	}
+	return nil
+}
+
 func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
 	var config runConfig
 	var err error
-	if config.TargetURL, err = targetURL(body["target_url"], allowed); err != nil {
-		return config, err
+	if value, present := body["target_url"]; present {
+		if config.TargetURL, err = targetURL(value, allowed); err != nil {
+			return config, err
+		}
+	}
+	targets := map[string]string{}
+	if value, present := body["targets"]; present {
+		items, ok := value.(map[string]any)
+		if !ok || len(items) == 0 {
+			return config, errors.New("targets must be a nonempty object")
+		}
+		for name, value := range items {
+			if !actionPattern.MatchString(name) {
+				return config, errors.New("target names must contain only letters, numbers, _, ., or -")
+			}
+			url, err := targetURL(value, allowed)
+			if err != nil {
+				return config, err
+			}
+			targets[name] = url
+		}
 	}
 	if value, ok := body["telemetry_url"]; ok {
 		if config.TelemetryURL, err = targetURL(value, allowed); err != nil {
@@ -219,6 +271,20 @@ func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
 		if err != nil {
 			return config, err
 		}
+		for index := range config.Scenarios {
+			scenario := &config.Scenarios[index]
+			fallback := config.TargetURL
+			if scenario.TargetURL != "" {
+				fallback = targets[scenario.TargetURL]
+				if fallback == "" {
+					return config, fmt.Errorf("unknown target %q", scenario.TargetURL)
+				}
+			}
+			scenario.TargetURL = fallback
+			if err := resolveTargets(scenario.Workflow, fallback, targets); err != nil {
+				return config, err
+			}
+		}
 	} else {
 		profiles := body["profiles"]
 		if profiles == nil {
@@ -232,6 +298,9 @@ func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
 			workflow = []any{map[string]any{"action": "request"}}
 		}
 		if config.Workflow, err = parseWorkflow(workflow); err != nil {
+			return config, err
+		}
+		if err := resolveTargets(config.Workflow, config.TargetURL, targets); err != nil {
 			return config, err
 		}
 		if config.Agents, err = number(body, "agents", 1, 1); err != nil {

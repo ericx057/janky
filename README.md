@@ -107,7 +107,7 @@ The response reports agent totals and request metrics, including successes, fail
 
 ### Several teams in one run
 
-Use `scenarios` to give each team its own agent count, profiles, and ordered workflow. The scenarios share the run's target URL, arrival rate, and concurrency limit. Agents from the scenarios are interleaved; the target receives a `scenario` field in each request. The run status includes agent counts for each scenario as well as the existing totals.
+Use `scenarios` to give each team its own agent count, profiles, and ordered workflow. The scenarios share the run's arrival rate and concurrency limit. Agents from the scenarios are interleaved; each target receives a `scenario` field in its requests. The run status includes agent counts for each scenario as well as the existing totals.
 
 ```json
 {
@@ -132,6 +132,40 @@ Use `scenarios` to give each team its own agent count, profiles, and ordered wor
 ```
 
 Submit this JSON to `POST /runs`. Scenario names must be unique and use letters, numbers, `_`, `.`, or `-`. Each scenario must specify `agents`, `profiles`, and `workflow`. The original single-workflow format still works; a request with `scenarios` cannot also set top-level `agents`, `profiles`, or `workflow`.
+
+### Route workflows to different services
+
+Define named HTTP endpoints in `targets`. A scenario's `target` selects its default endpoint; a step's `target` overrides it. A top-level `target_url` remains an optional fallback. Each step must resolve to an endpoint before the run starts.
+
+```json
+{
+  "targets": {
+    "crm": "http://127.0.0.1:4000/events",
+    "support": "http://127.0.0.1:5000/events"
+  },
+  "scenarios": [
+    {
+      "name": "sales",
+      "agents": 50,
+      "target": "crm",
+      "profiles": [{"team": "sales"}],
+      "workflow": [
+        {"action": "find_lead"},
+        {"action": "check_ticket", "target": "support"}
+      ]
+    },
+    {
+      "name": "support",
+      "agents": 50,
+      "target": "support",
+      "profiles": [{"team": "support"}],
+      "workflow": [{"action": "reply"}]
+    }
+  ]
+}
+```
+
+Target names use the same characters as scenario names. All endpoint URLs must use HTTP(S) and an allowed host. For workloads spanning live databases, point each target at the appropriate service or adapter; Janky sends HTTP requests to those endpoints.
 
 ## Capacity and safety
 

@@ -1,6 +1,6 @@
 # Use cases
 
-Janky helps exercise an HTTP service through sequences that resemble multi-step agent activity. Each virtual agent runs the same workflow with a selected profile, and each step is sent to the configured target endpoint.
+Janky helps exercise HTTP services through sequences that resemble multi-step agent activity. Each virtual agent runs a configured workflow with a selected profile, and each step is sent to its resolved target endpoint.
 
 ## Useful for
 
@@ -11,7 +11,7 @@ Janky helps exercise an HTTP service through sequences that resemble multi-step 
 - **Target monitoring:** collect an optional target telemetry endpoint alongside client-observed request metrics.
 - **Local development:** run a small reproducible workload against a loopback service before testing a shared environment.
 
-The action names and input payloads are yours to define. A target adapter can route all steps through one URL and port using the `action` field. Use synthetic profiles and data when exercising services that contain real user information.
+The action names and input payloads are yours to define. A target adapter can route steps through one URL using the `action` field, or named targets can route steps to separate services. Use synthetic profiles and data when exercising services that contain real user information.
 
 ## Where it is useful
 

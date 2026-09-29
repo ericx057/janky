@@ -322,6 +322,13 @@ func (s *server) invoke(w http.ResponseWriter, r *http.Request, id string) {
 			writeError(w, 400, err.Error())
 			return
 		}
+		for _, item := range workflow {
+			if item.TargetURL != "" {
+				s.mu.Unlock()
+				writeError(w, 400, "named targets are only supported in runs")
+				return
+			}
+		}
 	}
 	url := ""
 	if value, present := body["target_url"]; present {

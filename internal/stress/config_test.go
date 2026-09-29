@@ -232,3 +232,55 @@ func TestParseRunScenarios(t *testing.T) {
 		t.Fatal("accepted scenario agent total overflow")
 	}
 }
+
+func TestParseRunNamedTargets(t *testing.T) {
+	allowed := map[string]bool{"example.com": true}
+	base := map[string]any{
+		"targets": map[string]any{"sales": "https://example.com/sales", "support": "https://example.com/support"},
+		"scenarios": []any{
+			map[string]any{"name": "sales", "agents": json.Number("1"), "profiles": []any{map[string]any{}},
+				"target": "sales", "workflow": []any{map[string]any{"action": "lead"}, map[string]any{"action": "ticket", "target": "support"}}},
+		},
+	}
+	config, err := parseRun(base, allowed)
+	if err != nil || config.Scenarios[0].TargetURL != "https://example.com/sales" ||
+		config.Scenarios[0].Workflow[1].TargetURL != "https://example.com/support" {
+		t.Fatalf("named targets: %#v err=%v", config, err)
+	}
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"missing fallback", map[string]any{"targets": map[string]any{"one": "https://example.com/"}}},
+		{"bad targets type", map[string]any{"target_url": "https://example.com/", "targets": []any{}}},
+		{"empty targets", map[string]any{"target_url": "https://example.com/", "targets": map[string]any{}}},
+		{"bad name", map[string]any{"target_url": "https://example.com/", "targets": map[string]any{"bad name": "https://example.com/"}}},
+		{"bad URL", map[string]any{"target_url": "https://example.com/", "targets": map[string]any{"one": "file:///tmp"}}},
+		{"disallowed host", map[string]any{"target_url": "https://example.com/", "targets": map[string]any{"one": "https://other.com/"}}},
+		{"unknown scenario target", map[string]any{"targets": map[string]any{"one": "https://example.com/"}, "scenarios": []any{
+			map[string]any{"name": "s", "agents": json.Number("1"), "profiles": []any{map[string]any{}}, "target": "missing", "workflow": []any{map[string]any{"action": "a"}}}}}},
+		{"unresolved scenario step", map[string]any{"targets": map[string]any{"one": "https://example.com/"}, "scenarios": []any{
+			map[string]any{"name": "s", "agents": json.Number("1"), "profiles": []any{map[string]any{}}, "workflow": []any{map[string]any{"action": "a"}}}}}},
+		{"bad scenario target", map[string]any{"target_url": "https://example.com/", "scenarios": []any{
+			map[string]any{"name": "s", "agents": json.Number("1"), "profiles": []any{map[string]any{}}, "target": 1, "workflow": []any{map[string]any{"action": "a"}}}}}},
+		{"unknown step target", map[string]any{"target_url": "https://example.com/", "workflow": []any{map[string]any{"action": "a", "target": "missing"}}}},
+		{"bad step target", map[string]any{"target_url": "https://example.com/", "workflow": []any{map[string]any{"action": "a", "target": 1}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseRun(tc.body, allowed); err == nil {
+				t.Fatal("accepted invalid target configuration")
+			}
+		})
+	}
+	config, err = parseRun(map[string]any{"target_url": "https://example.com/default", "targets": map[string]any{"one": "https://example.com/one"},
+		"workflow": []any{map[string]any{"action": "first"}, map[string]any{"action": "second", "target": "one"}}}, allowed)
+	if err != nil || config.Workflow[0].TargetURL != "https://example.com/default" || config.Workflow[1].TargetURL != "https://example.com/one" {
+		t.Fatalf("step fallback: %#v err=%v", config.Workflow, err)
+	}
+	config, err = parseRun(map[string]any{"targets": map[string]any{"one": "https://example.com/one"}, "scenarios": []any{
+		map[string]any{"name": "s", "agents": json.Number("1"), "profiles": []any{map[string]any{}},
+			"workflow": []any{map[string]any{"action": "a", "target": "one"}}}}}, allowed)
+	if err != nil || config.Scenarios[0].Workflow[0].TargetURL != "https://example.com/one" {
+		t.Fatalf("step-only scenario target: %#v err=%v", config.Scenarios, err)
+	}
+}
