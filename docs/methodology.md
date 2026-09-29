@@ -11,9 +11,8 @@ Each target POST contains a workflow ID, one-based step number, action, agent ID
 ## Pace and bound traffic
 
 - `agents` sets total virtual agents (at least one).
-- `concurrency` caps agents running at once (at least one); it is not a destination host or port count.
+- `concurrency` caps agents running at once (at least one); it is not a destination host or port count. An optional scenario `concurrency` adds a local cap, while the run cap still applies.
 - `arrival_rate` schedules agent starts per second (at least one). Scenarios share this rate unless any scenario sets its own `arrival_rate` or `concurrency`; then each scenario has an independent schedule and inherits omitted values from the run.
-- `concurrency` limits active agents for the run. An optional scenario `concurrency` adds a limit for that scenario; the run limit always applies.
 - `think_ms` and `jitter_ms` introduce a pause between sequential steps; jitter also spreads arrival times.
 - `timeout_ms` bounds an HTTP request attempt.
 
