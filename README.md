@@ -187,7 +187,7 @@ Add optional `thresholds` to a run to set upper bounds for failure rate, client-
 
 ## Capacity and safety
 
-Janky has no fixed count caps on agents, concurrency, arrival rate, profiles, workflow steps, retries, or simultaneous workloads. Configuration requests are limited to 64 KiB. Large workloads use more CPU, memory, and sockets, and can overwhelm the target; start with a workload appropriate for the environment and monitor both sides. Use synthetic data when testing services that contain user information.
+Janky has no configured count caps on agents, concurrency, arrival rate, profiles, workflow steps, retries, or simultaneous workloads. Each configuration request is limited to 64 KiB, `/events` allows up to 32 observers, and the server retains at most 100 completed run summaries (active runs remain queryable). Large workloads use more CPU, memory, and sockets, and can overwhelm the target; start with a workload appropriate for the environment and monitor both sides. Use synthetic data when testing services that contain user information.
 
 The control API has no remote authentication layer. Keep it on trusted local tooling; do not expose it to untrusted callers.
 
@@ -197,6 +197,8 @@ The control API has no remote authentication layer. Keep it on trusted local too
 - Small dependency-free JavaScript ESM client in [`sdk/js/client.mjs`](sdk/js/client.mjs).
 - Go tests are colocated with the source; SDK tests live in `sdk/js/`.
 - [Documentation index](docs/README.md).
+
+The API also provides `GET /health`, `GET /status`, `GET /events`, and `GET /metrics`; `POST /agents/{id}/invoke` advances a caller-managed agent workflow. The SDK wraps these endpoints along with fleet submission and run lookup.
 
 ## Development
 
