@@ -11,7 +11,9 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type step struct {
@@ -51,32 +53,32 @@ func readJSON(r *http.Request) (map[string]any, error) {
 	return body, nil
 }
 
-func number(body map[string]any, key string, fallback, min, max int) (int, error) {
+func number(body map[string]any, key string, fallback, min int) (int, error) {
 	value := body[key]
 	if value == nil {
 		return fallback, nil
 	}
 	text, ok := value.(json.Number)
 	if !ok {
-		return 0, fmt.Errorf("%s must be an integer from %d to %d", key, min, max)
+		return 0, fmt.Errorf("%s must be an integer at least %d", key, min)
 	}
-	float, err := text.Float64()
-	if err != nil || math.IsNaN(float) || math.Trunc(float) != float || float < float64(min) || float > float64(max) {
-		return 0, fmt.Errorf("%s must be an integer from %d to %d", key, min, max)
+	n, err := strconv.Atoi(text.String())
+	if err != nil || n < min {
+		return 0, fmt.Errorf("%s must be an integer at least %d", key, min)
 	}
-	return int(float), nil
+	return n, nil
 }
 
 func parseProfiles(value any) ([]map[string]any, error) {
 	items, ok := value.([]any)
-	if !ok || len(items) < 1 || len(items) > 100 {
-		return nil, errors.New("profiles must contain 1 to 100 JSON objects")
+	if !ok || len(items) < 1 {
+		return nil, errors.New("profiles must contain at least one JSON object")
 	}
 	profiles := make([]map[string]any, len(items))
 	for index, item := range items {
 		profile, ok := item.(map[string]any)
 		if !ok {
-			return nil, errors.New("profiles must contain 1 to 100 JSON objects")
+			return nil, errors.New("profiles must contain at least one JSON object")
 		}
 		profiles[index] = profile
 	}
@@ -85,8 +87,8 @@ func parseProfiles(value any) ([]map[string]any, error) {
 
 func parseWorkflow(value any) ([]step, error) {
 	items, ok := value.([]any)
-	if !ok || len(items) < 1 || len(items) > 32 {
-		return nil, errors.New("workflow must contain 1 to 32 steps")
+	if !ok || len(items) < 1 {
+		return nil, errors.New("workflow must contain at least one step")
 	}
 	workflow := make([]step, len(items))
 	invalid := errors.New("workflow steps need an action, optional input object, and optional expect_status array")
@@ -109,7 +111,7 @@ func parseWorkflow(value any) ([]step, error) {
 		var expected []int
 		if value := object["expect_status"]; value != nil {
 			statuses, ok := value.([]any)
-			if !ok || len(statuses) < 1 || len(statuses) > 10 {
+			if !ok || len(statuses) < 1 {
 				return nil, invalid
 			}
 			for _, status := range statuses {
@@ -170,28 +172,28 @@ func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
 	if config.Workflow, err = parseWorkflow(workflow); err != nil {
 		return config, err
 	}
-	if config.Agents, err = number(body, "agents", 1, 1, 10000); err != nil {
+	if config.Agents, err = number(body, "agents", 1, 1); err != nil {
 		return config, err
 	}
-	if config.Concurrency, err = number(body, "concurrency", 10, 1, 256); err != nil {
+	if config.Concurrency, err = number(body, "concurrency", 10, 1); err != nil {
 		return config, err
 	}
-	if config.ArrivalRate, err = number(body, "arrival_rate", 10, 1, 10000); err != nil {
+	if config.ArrivalRate, err = number(body, "arrival_rate", 10, 1); err != nil {
 		return config, err
 	}
-	if config.ThinkMS, err = number(body, "think_ms", 50, 0, 60000); err != nil {
+	if config.ThinkMS, err = number(body, "think_ms", 50, 0); err != nil {
 		return config, err
 	}
-	if config.JitterMS, err = number(body, "jitter_ms", 50, 0, 60000); err != nil {
+	if config.JitterMS, err = number(body, "jitter_ms", 50, 0); err != nil {
 		return config, err
 	}
-	if config.TimeoutMS, err = number(body, "timeout_ms", 5000, 1, 120000); err != nil {
+	if config.TimeoutMS, err = number(body, "timeout_ms", 5000, 1); err != nil {
 		return config, err
 	}
-	if config.Retries, err = number(body, "retries", 1, 0, 5); err != nil {
+	if config.Retries, err = number(body, "retries", 1, 0); err != nil {
 		return config, err
 	}
-	if config.Seed, err = number(body, "seed", 1, 0, 2147483647); err != nil {
+	if config.Seed, err = number(body, "seed", 1, 0); err != nil {
 		return config, err
 	}
 	workers := runtime.NumCPU()
@@ -201,8 +203,12 @@ func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
 	if config.Agents < 1000 {
 		workers = 1
 	}
-	if config.Workers, err = number(body, "workers", workers, 1, 8); err != nil {
+	if config.Workers, err = number(body, "workers", workers, 1); err != nil {
 		return config, err
+	}
+	maxMS := int(math.MaxInt64 / int64(time.Millisecond))
+	if config.TimeoutMS > maxMS {
+		return config, errors.New("timeout_ms exceeds the supported duration range")
 	}
 	return config, nil
 }

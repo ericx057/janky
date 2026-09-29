@@ -59,7 +59,17 @@ func retryDelay(response *http.Response, attempt int) time.Duration {
 			return wait
 		}
 	}
+	if attempt >= 5 {
+		return time.Second
+	}
 	return time.Duration(50*(1<<attempt)) * time.Millisecond
+}
+
+func millisecondsDuration(value float64) time.Duration {
+	if value >= float64(math.MaxInt64)/float64(time.Millisecond) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(value * float64(time.Millisecond))
 }
 
 func (s *server) runEvent(run *runState, event map[string]any) {
@@ -203,7 +213,7 @@ func (s *server) runAgent(run *runState, config runConfig, index int) {
 	for position, item := range config.Workflow {
 		if position > 0 {
 			pause := float64(config.ThinkMS)*(0.5+random.next()) + random.next()*float64(config.JitterMS)
-			time.Sleep(time.Duration(pause * float64(time.Millisecond)))
+			time.Sleep(millisecondsDuration(pause))
 		}
 		event := eventFor(id, profile, position, workflowID, config.Workflow)
 		if !s.dispatch(config.TargetURL, event, item, config.TimeoutMS, config.Retries, run) {
@@ -244,12 +254,13 @@ func (s *server) runFleet(run *runState, config runConfig) {
 		}()
 	}
 	start := time.Now()
-	limit := make(chan struct{}, config.Concurrency)
+	concurrency := min(config.Concurrency, config.Agents)
+	limit := make(chan struct{}, concurrency)
 	var agents sync.WaitGroup
 	for index := 0; index < config.Agents; index++ {
 		jitter := randomSource(uint32(config.Seed + index))
 		due := float64(index)*1000/float64(config.ArrivalRate) + jitter.next()*float64(config.JitterMS)
-		if wait := time.Until(start.Add(time.Duration(due * float64(time.Millisecond)))); wait > 0 {
+		if wait := time.Until(start.Add(millisecondsDuration(due))); wait > 0 {
 			time.Sleep(wait)
 		}
 		limit <- struct{}{}
@@ -266,7 +277,7 @@ func (s *server) runFleet(run *runState, config runConfig) {
 	s.mu.Lock()
 	run.State = "completed"
 	run.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	s.activeRun = nil
+	s.trimRuns()
 	s.mu.Unlock()
 	s.runEvent(run, map[string]any{"type": "run_finished", "state": "completed"})
 }

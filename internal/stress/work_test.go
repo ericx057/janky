@@ -46,6 +46,15 @@ func TestExpectedStatusAndRetryDelayEdges(t *testing.T) {
 	if retryDelay(nil, 1) != 100*time.Millisecond {
 		t.Fatal("fallback retry delay")
 	}
+	if retryDelay(nil, 100) != time.Second {
+		t.Fatal("large retry backoff did not saturate")
+	}
+}
+
+func TestMillisecondsDurationDoesNotOverflow(t *testing.T) {
+	if millisecondsDuration(25) != 25*time.Millisecond || millisecondsDuration(1e20) != time.Duration(1<<63-1) {
+		t.Fatal("millisecond duration conversion overflowed")
+	}
 }
 
 func TestDispatchTransportFailuresAndTimeout(t *testing.T) {

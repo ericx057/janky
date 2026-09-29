@@ -384,7 +384,7 @@ func TestFailedDirectDeliveryKeepsCurrentStep(t *testing.T) {
 }
 
 func TestBusyAdmission(t *testing.T) {
-	entered := make(chan struct{}, 2)
+	entered := make(chan struct{}, 8)
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -411,7 +411,7 @@ func TestBusyAdmission(t *testing.T) {
 	if response, _ := postJSON(t, app.Client(), app.URL+"/agents/alice/invoke", input); response.StatusCode != 409 {
 		t.Fatalf("same-agent call status %d", response.StatusCode)
 	}
-	if response, _ := postJSON(t, app.Client(), app.URL+"/runs", input); response.StatusCode != 409 {
+	if response, created := postJSON(t, app.Client(), app.URL+"/runs", input); response.StatusCode != 202 || created["run_id"] == nil {
 		t.Fatalf("fleet during direct call status %d", response.StatusCode)
 	}
 	releaseOnce.Do(func() { close(release) })
@@ -433,11 +433,18 @@ func TestBusyAdmission(t *testing.T) {
 	if response.StatusCode != 202 {
 		t.Fatalf("start fleet: %d %#v", response.StatusCode, created)
 	}
-	if response, _ := postJSON(t, app.Client(), app.URL+"/agents/alice/invoke", input); response.StatusCode != 409 {
+	if response, _ := postJSON(t, app.Client(), app.URL+"/agents/alice/invoke", input); response.StatusCode != 200 {
 		t.Fatalf("direct call during fleet status %d", response.StatusCode)
+	}
+	other, second := postJSON(t, app.Client(), app.URL+"/runs", map[string]any{
+		"target_url": target.URL, "agents": 1, "think_ms": 0, "jitter_ms": 0, "retries": 0,
+	})
+	if other.StatusCode != 202 || second["run_id"] == created["run_id"] {
+		t.Fatalf("second fleet: %d %#v", other.StatusCode, second)
 	}
 	fleetReleaseOnce.Do(func() { close(releaseFleet) })
 	_ = waitRun(t, app.Client(), app.URL, created["run_id"].(string))
+	_ = waitRun(t, app.Client(), app.URL, second["run_id"].(string))
 }
 
 func TestRetryAfterAndNonRetryableStatus(t *testing.T) {
@@ -514,7 +521,8 @@ func TestRoutesAndDirectValidation(t *testing.T) {
 		{"POST", "/agents/a/invoke", `{"workflow":[]}`, 400},
 		{"POST", "/agents/a/invoke", `{"target_url":"http://example.com"}`, 400},
 		{"POST", "/agents/a/invoke", `{"timeout_ms":0}`, 400},
-		{"POST", "/agents/a/invoke", `{"retries":9}`, 400},
+		{"POST", "/agents/a/invoke", `{"timeout_ms":9223372036855}`, 400},
+		{"POST", "/agents/a/invoke", `{"retries":-1}`, 400},
 		{"POST", "/runs", "{", 400},
 	} {
 		t.Run(item.method+item.path+item.body, func(t *testing.T) {
@@ -544,13 +552,13 @@ func TestRoutesAndDirectValidation(t *testing.T) {
 	}
 }
 
-func TestStateEvictionAndEventObserverLimit(t *testing.T) {
+func TestAgentStateAndEventObserverLimit(t *testing.T) {
 	s := NewServer(nil).(*server)
 	for i := 0; i <= 10000; i++ {
 		s.saveAgent(fmt.Sprintf("a%d", i), agentState{})
 	}
-	if len(s.agents) != 10000 || len(s.agentOrder) != 10000 || s.agentOrder[0] != "a1" {
-		t.Fatalf("agent state was not bounded: %d %d", len(s.agents), len(s.agentOrder))
+	if len(s.agents) != 10001 || s.agents["a0"].Step != 0 {
+		t.Fatalf("agent state was discarded: %d", len(s.agents))
 	}
 	for i := 0; i < 32; i++ {
 		s.listeners[make(chan []byte)] = true
@@ -570,35 +578,30 @@ func TestStateEvictionAndEventObserverLimit(t *testing.T) {
 	}
 }
 
-func TestDirectAdmissionAndRunHistoryEviction(t *testing.T) {
+func TestRunHistoryEviction(t *testing.T) {
 	s := NewServer(nil).(*server)
-	s.directInFlight = 256
-	request := httptest.NewRequest("POST", "/agents/a/invoke", strings.NewReader(`{"target_url":"http://127.0.0.1:1"}`))
-	request.Header.Set("Content-Type", "application/json")
-	writer := httptest.NewRecorder()
-	s.ServeHTTP(writer, request)
-	if writer.Code != 429 {
-		t.Fatalf("direct admission: %d", writer.Code)
-	}
-	s.directInFlight = 0
 	for i := 0; i < 100; i++ {
 		id := fmt.Sprintf("%d", i)
 		s.runs[id] = &runState{ID: id, State: "completed"}
 		s.runOrder = append(s.runOrder, id)
 	}
-	request = httptest.NewRequest("POST", "/runs", strings.NewReader(`{"target_url":"http://127.0.0.1:1","agents":1,"retries":0}`))
+	request := httptest.NewRequest("POST", "/runs", strings.NewReader(`{"target_url":"http://127.0.0.1:1","agents":1,"retries":0}`))
 	request.Header.Set("Content-Type", "application/json")
-	writer = httptest.NewRecorder()
+	writer := httptest.NewRecorder()
 	s.ServeHTTP(writer, request)
 	if writer.Code != 202 || len(s.runs) != 100 || s.runs["0"] != nil {
 		t.Fatalf("run history eviction: status=%d runs=%d", writer.Code, len(s.runs))
 	}
+	var created map[string]string
+	if err := json.Unmarshal(writer.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(time.Second)
 	for {
 		s.mu.Lock()
-		active := s.activeRun != nil
+		state := s.runs[created["run_id"]].State
 		s.mu.Unlock()
-		if !active {
+		if state == "completed" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -610,6 +613,24 @@ func TestDirectAdmissionAndRunHistoryEviction(t *testing.T) {
 	s.ServeHTTP(writer, httptest.NewRequest("GET", "/status", nil))
 	if writer.Code != 200 || !strings.Contains(writer.Body.String(), `"runs"`) {
 		t.Fatalf("run history status: %s", writer.Body.String())
+	}
+}
+
+func TestActiveRunsStayQueryableWhenHistoryIsFull(t *testing.T) {
+	s := NewServer(nil).(*server)
+	for i := 0; i < 101; i++ {
+		id := fmt.Sprintf("%d", i)
+		s.runs[id] = &runState{ID: id, State: "running"}
+		s.runOrder = append(s.runOrder, id)
+	}
+	s.trimRuns()
+	if len(s.runs) != 101 || s.runs["0"] == nil {
+		t.Fatalf("active run evicted: %d", len(s.runs))
+	}
+	s.runs["0"].State = "completed"
+	s.trimRuns()
+	if len(s.runs) != 100 || s.runs["0"] != nil {
+		t.Fatalf("completed run retained: %d", len(s.runs))
 	}
 }
 

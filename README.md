@@ -31,16 +31,16 @@ The response includes a `run_id`. Poll `/runs/{run_id}` for progress and results
 - Sends each action as a JSON HTTP POST to one configured target URL.
 - Retries throttled and server-error responses, checks expected status codes, and records request outcomes.
 - Exposes live events, run status, Prometheus text metrics, and optional target telemetry.
-- Keeps only a bounded recent run history; target response bodies are discarded. Agent workflows hold one current position rather than a query history.
+- Keeps recent run history and direct agent state in memory; target response bodies are discarded. Agent workflows hold one current position rather than a query history.
 - Provides standalone p50, p95, p99, latency, and heap sampling helpers. These helpers are not connected to live runtime collection.
 
 ## API and SDK
 
 The local API provides `/health`, `/status`, `/metrics`, `/events`, `POST /runs`, `/runs/{id}`, and `POST /agents/{id}/invoke`. The Node ESM SDK lives in [`sdk/js/client.mjs`](sdk/js/client.mjs); see [its behavior](docs/architecture.md#javascript-sdk).
 
-## Limits
+## Capacity
 
-Current run limits are 10,000 agents, 256 concurrent agents, 100 profiles, 32 steps, five retries, and one active workload per process. These are generator limits; the target, proxy, machine, and network can impose lower limits. Use synthetic inputs and monitor the target alongside Janky.
+Janky does not impose fixed count caps on agents, concurrency, arrival rate, profiles, steps, retries, or simultaneous workloads. Configuration requests remain limited to 64 KiB. The values you request still consume memory, sockets, and CPU, and the target and network may impose lower practical limits. Use synthetic inputs and monitor the target alongside Janky.
 
 ## Development
 

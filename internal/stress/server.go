@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
@@ -28,19 +29,16 @@ type runState struct {
 }
 
 type server struct {
-	mu             sync.Mutex
-	allowed        map[string]bool
-	client         *http.Client
-	runs           map[string]*runState
-	runOrder       []string
-	agents         map[string]agentState
-	agentOrder     []string
-	busy           map[string]bool
-	activeRun      *runState
-	directInFlight int
-	listeners      map[chan []byte]bool
-	global         metrics
-	totals         struct{ Started, Completed, Failed int }
+	mu        sync.Mutex
+	allowed   map[string]bool
+	client    *http.Client
+	runs      map[string]*runState
+	runOrder  []string
+	agents    map[string]agentState
+	busy      map[string]bool
+	listeners map[chan []byte]bool
+	global    metrics
+	totals    struct{ Started, Completed, Failed int }
 }
 
 var agentPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
@@ -241,33 +239,36 @@ func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	if s.directInFlight > 0 || s.activeRun != nil {
-		s.mu.Unlock()
-		writeError(w, 409, "another workload is active")
-		return
-	}
 	run := &runState{ID: uuid(), State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	s.runs[run.ID] = run
 	s.runOrder = append(s.runOrder, run.ID)
-	if len(s.runOrder) > 100 {
-		delete(s.runs, s.runOrder[0])
-		s.runOrder = s.runOrder[1:]
-	}
-	s.activeRun = run
+	s.trimRuns()
 	s.mu.Unlock()
 	go s.runFleet(run, config)
 	writeJSON(w, 202, map[string]string{"run_id": run.ID, "status_url": "/runs/" + run.ID})
 }
 
+// trimRuns keeps active runs queryable even when more than 100 run requests overlap.
+// ponytail: linear scan; index completed runs if overlapping fleets make this hot.
+func (s *server) trimRuns() {
+	for len(s.runOrder) > 100 {
+		oldestCompleted := -1
+		for index, id := range s.runOrder {
+			if s.runs[id].State == "completed" {
+				oldestCompleted = index
+				break
+			}
+		}
+		if oldestCompleted < 0 {
+			return
+		}
+		delete(s.runs, s.runOrder[oldestCompleted])
+		s.runOrder = append(s.runOrder[:oldestCompleted], s.runOrder[oldestCompleted+1:]...)
+	}
+}
+
 func (s *server) saveAgent(id string, state agentState) {
-	if _, exists := s.agents[id]; !exists {
-		s.agentOrder = append(s.agentOrder, id)
-	}
 	s.agents[id] = state
-	if len(s.agentOrder) > 10000 {
-		delete(s.agents, s.agentOrder[0])
-		s.agentOrder = s.agentOrder[1:]
-	}
 }
 
 func (s *server) invoke(w http.ResponseWriter, r *http.Request, id string) {
@@ -286,7 +287,7 @@ func (s *server) invoke(w http.ResponseWriter, r *http.Request, id string) {
 		parsed, ok := value.(map[string]any)
 		if !ok {
 			s.mu.Unlock()
-			writeError(w, 400, "profiles must contain 1 to 100 JSON objects")
+			writeError(w, 400, "profile must be a JSON object")
 			return
 		}
 		profile = parsed
@@ -312,26 +313,26 @@ func (s *server) invoke(w http.ResponseWriter, r *http.Request, id string) {
 			return
 		}
 	}
-	timeout, err := number(body, "timeout_ms", 5000, 1, 120000)
+	timeout, err := number(body, "timeout_ms", 5000, 1)
 	if err != nil {
 		s.mu.Unlock()
 		writeError(w, 400, err.Error())
 		return
 	}
-	retries, err := number(body, "retries", 1, 0, 5)
+	if timeout > int(math.MaxInt64/int64(time.Millisecond)) {
+		s.mu.Unlock()
+		writeError(w, 400, "timeout_ms exceeds the supported duration range")
+		return
+	}
+	retries, err := number(body, "retries", 1, 0)
 	if err != nil {
 		s.mu.Unlock()
 		writeError(w, 400, err.Error())
 		return
 	}
-	if s.busy[id] || s.activeRun != nil {
+	if s.busy[id] {
 		s.mu.Unlock()
-		writeError(w, 409, "agent or fleet is busy")
-		return
-	}
-	if url != "" && s.directInFlight >= 256 {
-		s.mu.Unlock()
-		writeError(w, 429, "too many direct invocations")
+		writeError(w, 409, "agent is busy")
 		return
 	}
 	index := previous.Step % len(workflow)
@@ -349,7 +350,6 @@ func (s *server) invoke(w http.ResponseWriter, r *http.Request, id string) {
 	next := agentState{Profile: profile, Workflow: workflow, Step: (index + 1) % len(workflow), WorkflowID: workflowID}
 	if url != "" {
 		s.busy[id] = true
-		s.directInFlight++
 	} else {
 		s.saveAgent(id, next)
 	}
@@ -360,7 +360,6 @@ func (s *server) invoke(w http.ResponseWriter, r *http.Request, id string) {
 		delivered = result
 		s.mu.Lock()
 		delete(s.busy, id)
-		s.directInFlight--
 		if result {
 			s.saveAgent(id, next)
 		} else {

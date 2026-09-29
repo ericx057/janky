@@ -5,12 +5,12 @@ Janky has a Go HTTP control API and workload runner, plus a small dependency-fre
 ## Request flow
 
 1. A caller submits a fleet configuration to `POST /runs` or invokes one named agent through `POST /agents/{id}/invoke`.
-2. The control API validates JSON, workflow fields, numerical limits, and target URLs.
+2. The control API validates JSON, workflow fields, numerical values, and target URLs.
 3. A fleet run schedules agents by arrival rate and gates active workers by concurrency. An agent selects a profile, walks the workflow in order, and applies think time and jitter between steps.
 4. Each step becomes a JSON POST to the configured target. Janky drains and discards the target response body, then records status, latency, timeout, and retry outcome.
 5. Callers inspect run snapshots, global status, Prometheus metrics, or server-sent events. Optional target telemetry is sampled once per second and attached to snapshots.
 
-One process permits one active fleet or direct workload at a time. Recent run summaries and direct agent state are bounded; completed fleet configurations are not retained. A direct agent stores its profile, workflow, and next position so the next invocation can advance. The workflow is state-machine data, not a conversation transcript or query-result history.
+Fleet runs and direct agents can operate at the same time. Active runs remain queryable, recent completed run summaries are retained, and direct agent state remains in memory for the lifetime of the process. Completed fleet configurations are not retained. A direct agent stores its profile, workflow, and next position so the next invocation can advance. The workflow is state-machine data, not a conversation transcript or query-result history.
 
 ## Control API and target boundary
 

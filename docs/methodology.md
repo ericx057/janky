@@ -10,13 +10,13 @@ Each target POST contains a workflow ID, one-based step number, action, agent ID
 
 ## Pace and bound traffic
 
-- `agents` sets total virtual agents (1–10,000).
-- `concurrency` caps agents running at once (1–256); it is not a destination host or port count.
-- `arrival_rate` schedules agent starts per second (1–10,000).
+- `agents` sets total virtual agents (at least one).
+- `concurrency` caps agents running at once (at least one); it is not a destination host or port count.
+- `arrival_rate` schedules agent starts per second (at least one).
 - `think_ms` and `jitter_ms` introduce a pause between sequential steps; jitter also spreads arrival times.
 - `timeout_ms` bounds an HTTP request attempt.
 
-Fleet work runs in one process. The configured concurrency is a generator-side cap; target, proxy, OS, and network limits may be lower. Start conservatively and monitor both sides.
+Multiple fleets and direct agents can run in the same process. The configured concurrency applies to each fleet; their combined traffic may be higher. Target, OS, and network limits may be lower. Start conservatively and monitor both sides.
 
 ## Expected statuses and retries
 

@@ -59,10 +59,10 @@ func TestNumber(t *testing.T) {
 		{"NaN", json.Number("NaN"), 0, true},
 		{"fraction", json.Number("1.5"), 0, true},
 		{"below", json.Number("0"), 0, true},
-		{"above", json.Number("11"), 0, true},
+		{"above former cap", json.Number("11"), 11, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			n, err := number(map[string]any{"value": tc.value}, "value", 7, 1, 10)
+			n, err := number(map[string]any{"value": tc.value}, "value", 7, 1)
 			if n != tc.want || (err != nil) != tc.invalid {
 				t.Fatalf("number=%d err=%v", n, err)
 			}
@@ -71,7 +71,7 @@ func TestNumber(t *testing.T) {
 }
 
 func TestParseProfiles(t *testing.T) {
-	for _, value := range []any{nil, []any{}, make([]any, 101), []any{"bad"}} {
+	for _, value := range []any{nil, []any{}, []any{"bad"}} {
 		if _, err := parseProfiles(value); err == nil {
 			t.Errorf("accepted profiles %#v", value)
 		}
@@ -80,17 +80,23 @@ func TestParseProfiles(t *testing.T) {
 	if err != nil || len(profiles) != 1 || profiles[0]["id"] != "a" {
 		t.Fatalf("profiles=%#v err=%v", profiles, err)
 	}
+	large := make([]any, 101)
+	for i := range large {
+		large[i] = map[string]any{"id": i}
+	}
+	if profiles, err := parseProfiles(large); err != nil || len(profiles) != len(large) {
+		t.Fatalf("large profiles=%d err=%v", len(profiles), err)
+	}
 }
 
 func TestParseWorkflow(t *testing.T) {
 	for _, value := range []any{
-		nil, []any{}, make([]any, 33), []any{"bad"},
+		nil, []any{}, []any{"bad"},
 		[]any{map[string]any{}},
 		[]any{map[string]any{"action": "bad space"}},
 		[]any{map[string]any{"action": "ok", "input": []any{}}},
 		[]any{map[string]any{"action": "ok", "expect_status": "200"}},
 		[]any{map[string]any{"action": "ok", "expect_status": []any{}}},
-		[]any{map[string]any{"action": "ok", "expect_status": make([]any, 11)}},
 		[]any{map[string]any{"action": "ok", "expect_status": []any{200}}},
 		[]any{map[string]any{"action": "ok", "expect_status": []any{json.Number("bad")}}},
 		[]any{map[string]any{"action": "ok", "expect_status": []any{json.Number("200.5")}}},
@@ -109,6 +115,13 @@ func TestParseWorkflow(t *testing.T) {
 		steps[0].Input["query"] != "x" || len(steps[0].ExpectStatus) != 2 ||
 		steps[1].Action != "next" || len(steps[1].Input) != 0 {
 		t.Fatalf("steps=%#v err=%v", steps, err)
+	}
+	large := make([]any, 33)
+	for i := range large {
+		large[i] = map[string]any{"action": "ok"}
+	}
+	if steps, err := parseWorkflow(large); err != nil || len(steps) != len(large) {
+		t.Fatalf("large workflow=%d err=%v", len(steps), err)
 	}
 }
 
@@ -142,7 +155,9 @@ func TestParseRun(t *testing.T) {
 		{"agents", json.Number("0")}, {"concurrency", json.Number("0")},
 		{"arrival_rate", json.Number("0")}, {"think_ms", json.Number("-1")},
 		{"jitter_ms", json.Number("-1")}, {"timeout_ms", json.Number("0")},
-		{"retries", json.Number("6")}, {"seed", json.Number("-1")},
+		{"timeout_ms", json.Number("9223372036855")},
+		{"retries", json.Number("-1")},
+		{"seed", json.Number("-1")},
 		{"workers", json.Number("0")},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
@@ -162,5 +177,13 @@ func TestParseRun(t *testing.T) {
 	config, err = parseRun(map[string]any{"target_url": "http://example.com", "agents": json.Number("1000")}, allowed)
 	if err != nil || config.Workers < 1 || config.Workers > 4 {
 		t.Fatalf("worker default=%#v err=%v", config, err)
+	}
+	config, err = parseRun(map[string]any{
+		"target_url": "http://example.com", "agents": json.Number("10001"),
+		"concurrency": json.Number("257"), "arrival_rate": json.Number("10001"),
+		"retries": json.Number("6"), "workers": json.Number("9"),
+	}, allowed)
+	if err != nil || config.Agents != 10001 || config.Concurrency != 257 || config.ArrivalRate != 10001 || config.Retries != 6 || config.Workers != 9 {
+		t.Fatalf("large config=%#v err=%v", config, err)
 	}
 }
