@@ -20,9 +20,11 @@ curl -s http://127.0.0.1:3000/agents/example/invoke \
 
 Each call returns an assistant message with a `workflow_request` tool call. The next call for the same ID advances the workflow. Add `target_url` to send the tool call as an HTTP POST; when delivery fails, the next call retries the same step. The endpoint can be used without a target to inspect the generated action.
 
+The tester consumes and discards target response bodies. It keeps no per-query result history. A direct agent retains its profile, workflow definition, and next step in memory so later calls can advance without resending them. Each agent has one current workflow position; requests replace that state rather than append a conversation. Restarting the process clears it.
+
 ## Fleet
 
-The target receives one JSON event per workflow step. Set `target_url` to the full POST URL accepted by your adapter.
+The target receives one JSON event per workflow step. Set `target_url` to the full POST URL accepted by your adapter. All steps can go to the same endpoint and port; the target can route events by the `action` field.
 
 ```sh
 curl -s http://127.0.0.1:3000/runs \
@@ -64,6 +66,12 @@ The response contains a `run_id` and `status_url`. Profiles rotate across agents
 ```
 
 The caller defines every profile, workflow action, input, and expected status; the toolkit assigns no roles or policies. Use synthetic context and inputs. `workers` splits a fleet across Node worker threads while keeping the configured `concurrency` as the total cap; fleets of at least 1,000 agents use up to four workers by default. Limits: 10,000 agents, 256 concurrent agents, eight workers, 100 profiles, 32 steps, five retries, and one active run per process. Run a second process or host when generator CPU/network overhead skews the target measurements.
+
+Fleet configurations are discarded when a run finishes. Run summaries retain counts, latency samples, and any configured target telemetry; they do not retain individual request or response bodies.
+
+### Ports and connections
+
+The generator sends requests to one configured target host and port. `concurrency` limits simultaneous workflow requests, not the number of destination hosts or ports. Node's `fetch` manages its HTTP connections; concurrent requests may use multiple connections to that same host. A single listening port can accept them all, so separate ports are not needed to scale this test. This sends ordinary HTTP requests, not multiple request streams over one HTTP/2 connection. The target's server, proxy, and operating system may impose their own connection or request limits; monitor those alongside the generator metrics.
 
 ## Observe
 

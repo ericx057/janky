@@ -207,9 +207,9 @@ function publicRun(run) {
     error: run.error ?? null };
 }
 
-async function sampleTelemetry(run) {
+async function sampleTelemetry(run, telemetryUrl) {
   try {
-    const response = await fetch(run.config.telemetry_url,
+    const response = await fetch(telemetryUrl,
       { signal: AbortSignal.timeout(2000), redirect: 'manual' });
     const chunks = [];
     let size = 0;
@@ -330,14 +330,15 @@ export function createApp({ allowedHosts = process.env.ALLOWED_TARGET_HOSTS?.spl
       }
       emit(event);
     };
+    const telemetryUrl = run.config.telemetry_url;
     let sampling = false;
     const sample = async () => {
       if (sampling) return;
       sampling = true;
-      try { await sampleTelemetry(run); } finally { sampling = false; }
+      try { await sampleTelemetry(run, telemetryUrl); } finally { sampling = false; }
     };
-    const initialSample = run.config.telemetry_url ? sample() : Promise.resolve();
-    const interval = run.config.telemetry_url ? setInterval(() => { void sample(); }, 1000) : null;
+    const initialSample = telemetryUrl ? sample() : Promise.resolve();
+    const interval = telemetryUrl ? setInterval(() => { void sample(); }, 1000) : null;
     try {
       if (workerCount === 1) {
         const indexes = Array.from({ length: run.config.agents }, (_, index) => index);
@@ -372,6 +373,7 @@ export function createApp({ allowedHosts = process.env.ALLOWED_TARGET_HOSTS?.spl
       await Promise.all(workers.map(worker => worker.terminate()));
       if (interval) clearInterval(interval);
       await initialSample;
+      delete run.config;
       run.finished_at = new Date().toISOString();
       emit({ type: 'run_finished', run_id: run.id, state: run.state });
     }
