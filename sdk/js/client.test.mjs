@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { createClient } from './sdk.mjs';
+import { createClient } from './client.mjs';
 
 const servers = [];
 let backend;
@@ -31,12 +31,14 @@ async function listenBackend() {
   if (backendUrl) return backendUrl;
   buildDir = await mkdtemp(join(tmpdir(), 'janky-sdk-'));
   const binary = join(buildDir, 'server');
-  await promisify(execFile)('go', ['build', '-o', binary, '.']);
+  await promisify(execFile)('go', ['build', '-o', binary, './cmd/janky']);
   const reservation = createServer();
   await new Promise(resolve => reservation.listen(0, '127.0.0.1', resolve));
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
-  backend = spawn(binary, [String(port)], { stdio: 'ignore' });
+  backend = spawn(binary, [String(port)], { stdio: 'ignore', env: {
+    ...process.env, ALLOWED_TARGET_HOSTS: '127.0.0.1,localhost,::1',
+  } });
   backendUrl = `http://127.0.0.1:${port}`;
   for (let attempt = 0; attempt < 200; attempt++) {
     if (backend.exitCode !== null) throw new Error('Go backend exited during startup');

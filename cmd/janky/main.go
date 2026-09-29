@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ericx057/janky/internal/stress"
 )
 
 var exitProcess = os.Exit
@@ -29,7 +31,7 @@ func runCLI(args []string, lookupEnv func(string) (string, bool), serve func(str
 	}
 	address := fmt.Sprintf("127.0.0.1:%d", port)
 	log.Printf("agent stress tester listening on http://%s", address)
-	return serve(address, NewServer(hosts))
+	return serve(address, stress.NewServer(hosts))
 }
 
 func main() {
