@@ -1,6 +1,9 @@
 package stress
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestTaggedMetricsAndThresholds(t *testing.T) {
 	groups := map[requestTags]*metrics{
@@ -61,7 +64,22 @@ func TestTaggedLatencySamplesStayBounded(t *testing.T) {
 	for index := 0; index < 1001; index++ {
 		group.recordBounded(float64(index), 200, false, true, 1000)
 	}
-	if group.Total != 1001 || len(group.Latencies) != 1000 || group.Latencies[1] != 1000 {
+	if group.Total != 1001 || len(group.Latencies) != 1000 || !slices.Contains(group.Latencies, 1000) {
 		t.Fatalf("tagged latency samples: %+v", group)
+	}
+}
+
+func TestLatencyThresholdRepresentsWholeRunAfterLateSlowdown(t *testing.T) {
+	var group metrics
+	for index := 0; index < 100000; index++ {
+		group.recordBounded(10, 200, false, true, 1000)
+	}
+	for index := 0; index < 1000; index++ {
+		group.recordBounded(1000, 200, false, true, 1000)
+	}
+	results, passed := evaluateThresholds([]thresholdConfig{{Metric: "latency_p95_ms", Max: 10}},
+		map[requestTags]*metrics{{Action: "read"}: &group})
+	if !passed || results[0]["actual"] != float64(10) {
+		t.Fatalf("late phase dominated whole-run p95: %#v", results)
 	}
 }

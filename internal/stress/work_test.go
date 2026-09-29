@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,7 +23,7 @@ func TestMetricsBoundedSamplesAndTimeout(t *testing.T) {
 	for i := 0; i < 10001; i++ {
 		m.record(float64(i), 0, i == 10000, false)
 	}
-	if len(m.Latencies) != 10000 || m.Latencies[1] != 10000 || m.Timeouts != 1 || m.Total != 10001 {
+	if len(m.Latencies) != 10000 || !slices.Contains(m.Latencies, 10000) || m.Timeouts != 1 || m.Total != 10001 {
 		t.Fatalf("bounded samples or timeout count: %+v", m)
 	}
 }

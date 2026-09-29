@@ -30,7 +30,7 @@ The configured retry count is the maximum number of retries after an initial att
 
 An optional `telemetry_url` is sampled once per second during a fleet run. It must be on an allowed target host; responses up to 16 KiB are retained in run/status snapshots as JSON or text. This is supplied target telemetry, not an estimate of target internals.
 
-The p50/p95/p99 and heap sampling functions are standalone helpers. They are not wired into request execution or per-agent runtime reporting. Runtime request metrics retain bounded latency samples for average and p95 reporting; individual target response bodies are discarded.
+The p50/p95/p99 and heap sampling functions are standalone helpers. They are not wired into request execution or per-agent runtime reporting. Runtime request metrics retain bounded reservoir samples for p95 reporting and exact sums for averages; individual target response bodies are discarded.
 
 ## Interpret results
 

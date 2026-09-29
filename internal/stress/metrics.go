@@ -11,6 +11,7 @@ type metrics struct {
 	Retries, InFlight                                 int
 	LatencySum                                        float64
 	Latencies                                         []float64
+	sampleState                                       randomSource
 }
 
 type requestTags struct{ Scenario, Action, Target string }
@@ -38,7 +39,9 @@ func (m *metrics) recordBounded(latency float64, status int, timedOut, expected 
 	if len(m.Latencies) < limit {
 		m.Latencies = append(m.Latencies, latency)
 	} else {
-		m.Latencies[m.Total%limit] = latency
+		if slot := int(m.sampleState.next() * float64(m.Total)); slot < limit {
+			m.Latencies[slot] = latency
+		}
 	}
 	if expected {
 		m.Succeeded++
