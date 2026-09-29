@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -185,5 +186,49 @@ func TestParseRun(t *testing.T) {
 	}, allowed)
 	if err != nil || config.Agents != 10001 || config.Concurrency != 257 || config.ArrivalRate != 10001 || config.Retries != 6 || config.Workers != 9 {
 		t.Fatalf("large config=%#v err=%v", config, err)
+	}
+}
+
+func TestParseRunScenarios(t *testing.T) {
+	allowed := map[string]bool{"example.com": true}
+	item := func(name string) map[string]any {
+		return map[string]any{"name": name, "agents": json.Number("2"),
+			"profiles": []any{map[string]any{"team": name}},
+			"workflow": []any{map[string]any{"action": "read"}}}
+	}
+	config, err := parseRun(map[string]any{"target_url": "http://example.com", "scenarios": []any{item("sales"), item("support")}}, allowed)
+	if err != nil || len(config.Scenarios) != 2 || config.Scenarios[0].Name != "sales" ||
+		config.Scenarios[1].Agents != 2 || config.Scenarios[1].Profiles[0]["team"] != "support" {
+		t.Fatalf("scenarios=%#v err=%v", config.Scenarios, err)
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"empty", []any{}}, {"wrong type", "sales"}, {"bad entry", []any{"sales"}},
+		{"missing name", []any{map[string]any{"agents": json.Number("1"), "profiles": item("x")["profiles"], "workflow": item("x")["workflow"]}}},
+		{"invalid name", []any{item("bad name")}}, {"duplicate name", []any{item("sales"), item("sales")}},
+		{"missing agents", []any{map[string]any{"name": "sales", "profiles": item("x")["profiles"], "workflow": item("x")["workflow"]}}},
+		{"bad agents", []any{map[string]any{"name": "sales", "agents": json.Number("0"), "profiles": item("x")["profiles"], "workflow": item("x")["workflow"]}}},
+		{"missing profiles", []any{map[string]any{"name": "sales", "agents": json.Number("1"), "workflow": item("x")["workflow"]}}},
+		{"missing workflow", []any{map[string]any{"name": "sales", "agents": json.Number("1"), "profiles": item("x")["profiles"]}}},
+		{"bad profiles", []any{map[string]any{"name": "sales", "agents": json.Number("1"), "profiles": []any{}, "workflow": item("x")["workflow"]}}},
+		{"bad workflow", []any{map[string]any{"name": "sales", "agents": json.Number("1"), "profiles": item("x")["profiles"], "workflow": []any{}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseRun(map[string]any{"target_url": "http://example.com", "scenarios": tc.value}, allowed); err == nil {
+				t.Fatal("accepted invalid scenarios")
+			}
+		})
+	}
+	for _, key := range []string{"agents", "profiles", "workflow"} {
+		if _, err := parseRun(map[string]any{"target_url": "http://example.com", "scenarios": []any{item("sales")}, key: item("sales")[key]}, allowed); err == nil {
+			t.Fatalf("accepted mixed %s and scenarios", key)
+		}
+	}
+	large := item("large")
+	large["agents"] = json.Number(strconv.Itoa(int(^uint(0) >> 1)))
+	if _, err := parseRun(map[string]any{"target_url": "http://example.com", "scenarios": []any{large, item("extra")}}, allowed); err == nil {
+		t.Fatal("accepted scenario agent total overflow")
 	}
 }

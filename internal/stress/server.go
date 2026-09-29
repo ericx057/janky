@@ -20,10 +20,13 @@ type agentState struct {
 	Retry      bool
 }
 
+type agentCounts struct{ Started, Completed, Failed int }
+
 type runState struct {
 	ID, State, StartedAt string
 	FinishedAt, Error    any
-	Agents               struct{ Started, Completed, Failed int }
+	Agents               agentCounts
+	Scenarios            map[string]*agentCounts
 	Metrics              metrics
 	Telemetry            any
 }
@@ -38,7 +41,7 @@ type server struct {
 	busy      map[string]bool
 	listeners map[chan []byte]bool
 	global    metrics
-	totals    struct{ Started, Completed, Failed int }
+	totals    agentCounts
 }
 
 var agentPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
@@ -167,12 +170,22 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) runSnapshot(run *runState) map[string]any {
 	errorValue := run.Error
-	return map[string]any{
+	result := map[string]any{
 		"run_id": run.ID, "state": run.State,
 		"agents":   map[string]int{"started": run.Agents.Started, "completed": run.Agents.Completed, "failed": run.Agents.Failed},
 		"requests": run.Metrics.snapshot(), "started_at": run.StartedAt,
 		"finished_at": run.FinishedAt, "target_telemetry": run.Telemetry, "error": errorValue,
 	}
+	if len(run.Scenarios) > 0 {
+		scenarios := make(map[string]any, len(run.Scenarios))
+		for name, counts := range run.Scenarios {
+			scenarios[name] = map[string]any{"agents": map[string]int{
+				"started": counts.Started, "completed": counts.Completed, "failed": counts.Failed,
+			}}
+		}
+		result["scenarios"] = scenarios
+	}
+	return result
 }
 
 func (s *server) getRun(w http.ResponseWriter, id string) {
@@ -240,6 +253,12 @@ func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	run := &runState{ID: uuid(), State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if len(config.Scenarios) > 0 {
+		run.Scenarios = make(map[string]*agentCounts, len(config.Scenarios))
+		for _, scenario := range config.Scenarios {
+			run.Scenarios[scenario.Name] = &agentCounts{}
+		}
+	}
 	s.runs[run.ID] = run
 	s.runOrder = append(s.runOrder, run.ID)
 	s.trimRuns()

@@ -201,6 +201,83 @@ func TestFleetConcurrencyStatusAndMetrics(t *testing.T) {
 	}
 }
 
+func TestMultiScenarioRun(t *testing.T) {
+	var mu sync.Mutex
+	var events []map[string]any
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var event map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Errorf("target body: %v", err)
+			return
+		}
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+		if event["action"] == "ticket" {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer target.Close()
+	app := httptest.NewServer(NewServer(nil))
+	defer app.Close()
+	response, created := postJSON(t, app.Client(), app.URL+"/runs", map[string]any{
+		"target_url": target.URL, "concurrency": 2, "arrival_rate": 1000, "think_ms": 0, "jitter_ms": 0, "retries": 0,
+		"scenarios": []any{
+			map[string]any{"name": "sales", "agents": 4, "profiles": []any{map[string]any{"team": "sales", "variant": "a"}, map[string]any{"team": "sales", "variant": "b"}},
+				"workflow": []any{map[string]any{"action": "lead"}, map[string]any{"action": "quote"}}},
+			map[string]any{"name": "support", "agents": 2, "profiles": []any{map[string]any{"team": "support", "variant": "a"}, map[string]any{"team": "support", "variant": "b"}},
+				"workflow": []any{map[string]any{"action": "ticket"}}},
+		},
+	})
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("create run: status %d, body %#v", response.StatusCode, created)
+	}
+	run := waitRun(t, app.Client(), app.URL, created["run_id"].(string))
+	if field(t, run, "agents")["completed"] != float64(4) || field(t, run, "agents")["failed"] != float64(2) || field(t, run, "requests")["total"] != float64(10) {
+		t.Fatalf("aggregate counts: %#v", run)
+	}
+	scenarios := field(t, run, "scenarios")
+	if field(t, field(t, scenarios, "sales"), "agents")["completed"] != float64(4) ||
+		field(t, field(t, scenarios, "support"), "agents")["failed"] != float64(2) {
+		t.Fatalf("scenario counts: %#v", scenarios)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 10 {
+		t.Fatalf("events: %#v", events)
+	}
+	seen := map[string]map[string]int{}
+	variants := map[string]map[string]bool{}
+	for _, event := range events {
+		name := event["scenario"].(string)
+		profile := field(t, event, "agent")
+		values := field(t, profile, "profile")
+		if values["team"] != name {
+			t.Fatalf("scenario profile mismatch: %#v", event)
+		}
+		if variants[name] == nil {
+			variants[name] = map[string]bool{}
+		}
+		variants[name][values["variant"].(string)] = true
+		id := profile["id"].(string)
+		if seen[id] == nil {
+			seen[id] = map[string]int{}
+		}
+		seen[id][event["action"].(string)]++
+	}
+	if len(seen) != 6 || len(variants["sales"]) != 2 || len(variants["support"]) != 2 {
+		t.Fatalf("agent IDs or profile rotation: ids=%#v variants=%#v", seen, variants)
+	}
+	for _, actions := range seen {
+		if actions["lead"] > 0 && (actions["lead"] != 1 || actions["quote"] != 1) {
+			t.Fatalf("sales workflow broken: %#v", actions)
+		}
+		if actions["ticket"] > 0 && actions["ticket"] != 1 {
+			t.Fatalf("support workflow broken: %#v", actions)
+		}
+	}
+}
+
 func TestValidationAndRedirectIsolation(t *testing.T) {
 	app := httptest.NewServer(NewServer(nil))
 	defer app.Close()

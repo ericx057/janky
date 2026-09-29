@@ -138,8 +138,21 @@ func TestFleetDispatchCountsRetries(t *testing.T) {
 	})
 	run := &runState{ID: "r"}
 	event := eventFor("a", nil, 0, "w", []step{{Action: "read"}})
+	event["scenario"] = "sales"
+	listener := make(chan []byte, 16)
+	s.listeners[listener] = true
 	if !s.dispatch("http://localhost/", event, step{Action: "read"}, 100, 1, run) || attempts != 2 || run.Metrics.Retries != 1 {
 		t.Fatalf("fleet retry attempts=%d metrics=%+v", attempts, run.Metrics)
+	}
+	foundRetry := false
+	for len(listener) > 0 {
+		line := string(<-listener)
+		if strings.Contains(line, `"type":"retry"`) && strings.Contains(line, `"scenario":"sales"`) {
+			foundRetry = true
+		}
+	}
+	if !foundRetry {
+		t.Fatal("retry event missing scenario")
 	}
 }
 
@@ -149,7 +162,7 @@ func TestRunAgentFailedDelivery(t *testing.T) {
 		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
 	})
 	run := &runState{ID: "r"}
-	s.runAgent(run, runConfig{TargetURL: "http://localhost/", Profiles: []map[string]any{{}}, Workflow: []step{{Action: "fail"}}, TimeoutMS: 100, Retries: 0}, 0)
+	s.runAgent(run, runConfig{TargetURL: "http://localhost/", Profiles: []map[string]any{{}}, Workflow: []step{{Action: "fail"}}, TimeoutMS: 100, Retries: 0}, 0, 0)
 	if run.Agents.Started != 1 || run.Agents.Failed != 1 || run.Agents.Completed != 0 || s.totals.Failed != 1 {
 		t.Fatalf("failed agent accounting: %+v", run.Agents)
 	}

@@ -93,7 +93,11 @@ func (s *server) dispatch(target string, event map[string]any, step step, timeou
 			run.Metrics.InFlight++
 		}
 		s.mu.Unlock()
-		s.runEvent(run, map[string]any{"type": "request_started", "agent_id": agent, "action": step.Action})
+		startedEvent := map[string]any{"type": "request_started", "agent_id": agent, "action": step.Action}
+		if scenario, ok := event["scenario"]; ok {
+			startedEvent["scenario"] = scenario
+		}
+		s.runEvent(run, startedEvent)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMS)*time.Millisecond)
 		request, requestError := http.NewRequestWithContext(ctx, "POST", target, bytes.NewReader(body))
 		var response *http.Response
@@ -128,9 +132,13 @@ func (s *server) dispatch(target string, event map[string]any, step step, timeou
 			run.Metrics.record(latency, status, timedOut, expected)
 		}
 		s.mu.Unlock()
-		s.runEvent(run, map[string]any{"type": "request", "workflow_id": event["workflow_id"],
+		requestEvent := map[string]any{"type": "request", "workflow_id": event["workflow_id"],
 			"agent_id": agent, "action": step.Action, "status": status,
-			"error": errorName, "expected": expected, "latency_ms": latency})
+			"error": errorName, "expected": expected, "latency_ms": latency}
+		if scenario, ok := event["scenario"]; ok {
+			requestEvent["scenario"] = scenario
+		}
+		s.runEvent(run, requestEvent)
 		if expected {
 			return true
 		}
@@ -143,7 +151,11 @@ func (s *server) dispatch(target string, event map[string]any, step step, timeou
 			run.Metrics.Retries++
 		}
 		s.mu.Unlock()
-		s.runEvent(run, map[string]any{"type": "retry", "agent_id": agent})
+		retryEvent := map[string]any{"type": "retry", "agent_id": agent}
+		if scenario, ok := event["scenario"]; ok {
+			retryEvent["scenario"] = scenario
+		}
+		s.runEvent(run, retryEvent)
 		time.Sleep(retryDelay(response, attempt))
 	}
 }
@@ -199,15 +211,22 @@ func (s *server) sampleTelemetry(run *runState, url string) {
 	s.mu.Unlock()
 }
 
-func (s *server) runAgent(run *runState, config runConfig, index int) {
+func (s *server) runAgent(run *runState, config runConfig, index, profileIndex int) {
 	id := fmt.Sprintf("%s-%d", run.ID, index+1)
-	profile := config.Profiles[index%len(config.Profiles)]
+	profile := config.Profiles[profileIndex%len(config.Profiles)]
 	random := randomSource(uint32(config.Seed + index + 1))
 	s.mu.Lock()
 	run.Agents.Started++
 	s.totals.Started++
+	if config.Name != "" {
+		run.Scenarios[config.Name].Started++
+	}
 	s.mu.Unlock()
-	s.runEvent(run, map[string]any{"type": "agent_started", "agent_id": id})
+	startedEvent := map[string]any{"type": "agent_started", "agent_id": id}
+	if config.Name != "" {
+		startedEvent["scenario"] = config.Name
+	}
+	s.runEvent(run, startedEvent)
 	workflowID := uuid()
 	succeeded := true
 	for position, item := range config.Workflow {
@@ -216,6 +235,9 @@ func (s *server) runAgent(run *runState, config runConfig, index int) {
 			time.Sleep(millisecondsDuration(pause))
 		}
 		event := eventFor(id, profile, position, workflowID, config.Workflow)
+		if config.Name != "" {
+			event["scenario"] = config.Name
+		}
 		if !s.dispatch(config.TargetURL, event, item, config.TimeoutMS, config.Retries, run) {
 			succeeded = false
 			break
@@ -225,12 +247,22 @@ func (s *server) runAgent(run *runState, config runConfig, index int) {
 	if succeeded {
 		run.Agents.Completed++
 		s.totals.Completed++
+		if config.Name != "" {
+			run.Scenarios[config.Name].Completed++
+		}
 	} else {
 		run.Agents.Failed++
 		s.totals.Failed++
+		if config.Name != "" {
+			run.Scenarios[config.Name].Failed++
+		}
 	}
 	s.mu.Unlock()
-	s.runEvent(run, map[string]any{"type": "agent_finished", "agent_id": id, "succeeded": succeeded})
+	finishedEvent := map[string]any{"type": "agent_finished", "agent_id": id, "succeeded": succeeded}
+	if config.Name != "" {
+		finishedEvent["scenario"] = config.Name
+	}
+	s.runEvent(run, finishedEvent)
 }
 
 func (s *server) runFleet(run *runState, config runConfig) {
@@ -257,6 +289,8 @@ func (s *server) runFleet(run *runState, config runConfig) {
 	concurrency := min(config.Concurrency, config.Agents)
 	limit := make(chan struct{}, concurrency)
 	var agents sync.WaitGroup
+	positions := make([]int, len(config.Scenarios))
+	slot := 0
 	for index := 0; index < config.Agents; index++ {
 		jitter := randomSource(uint32(config.Seed + index))
 		due := float64(index)*1000/float64(config.ArrivalRate) + jitter.next()*float64(config.JitterMS)
@@ -264,12 +298,26 @@ func (s *server) runFleet(run *runState, config runConfig) {
 			time.Sleep(wait)
 		}
 		limit <- struct{}{}
+		agentConfig := config
+		profileIndex := index
+		if len(config.Scenarios) > 0 {
+			for positions[slot] >= config.Scenarios[slot].Agents {
+				slot = (slot + 1) % len(config.Scenarios)
+			}
+			scenario := config.Scenarios[slot]
+			agentConfig.Name = scenario.Name
+			agentConfig.Profiles = scenario.Profiles
+			agentConfig.Workflow = scenario.Workflow
+			profileIndex = positions[slot]
+			positions[slot]++
+			slot = (slot + 1) % len(config.Scenarios)
+		}
 		agents.Add(1)
-		go func(index int) {
+		go func(index, profileIndex int, agentConfig runConfig) {
 			defer agents.Done()
 			defer func() { <-limit }()
-			s.runAgent(run, config, index)
-		}(index)
+			s.runAgent(run, agentConfig, index, profileIndex)
+		}(index, profileIndex, agentConfig)
 	}
 	agents.Wait()
 	close(stopTelemetry)

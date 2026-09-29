@@ -22,16 +22,67 @@ type step struct {
 	ExpectStatus []int
 }
 
+type scenarioConfig struct {
+	Name     string
+	Agents   int
+	Profiles []map[string]any
+	Workflow []step
+}
+
 type runConfig struct {
 	TargetURL, TelemetryURL          string
+	Name                             string
 	Profiles                         []map[string]any
 	Workflow                         []step
+	Scenarios                        []scenarioConfig
 	Agents, Concurrency, ArrivalRate int
 	ThinkMS, JitterMS, TimeoutMS     int
 	Retries, Seed, Workers           int
 }
 
 var actionPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+func parseScenarios(value any) ([]scenarioConfig, int, error) {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return nil, 0, errors.New("scenarios must contain at least one object")
+	}
+	scenarios := make([]scenarioConfig, 0, len(items))
+	seen := make(map[string]bool, len(items))
+	total := 0
+	for _, value := range items {
+		item, ok := value.(map[string]any)
+		if !ok {
+			return nil, 0, errors.New("scenario must be an object")
+		}
+		name, ok := item["name"].(string)
+		if !ok || !actionPattern.MatchString(name) || seen[name] {
+			return nil, 0, errors.New("scenario names must be unique and contain only letters, numbers, _, ., or -")
+		}
+		seen[name] = true
+		if item["agents"] == nil {
+			return nil, 0, errors.New("scenario agents is required")
+		}
+		agents, err := number(item, "agents", 0, 1)
+		if err != nil {
+			return nil, 0, err
+		}
+		profiles, err := parseProfiles(item["profiles"])
+		if err != nil {
+			return nil, 0, err
+		}
+		workflow, err := parseWorkflow(item["workflow"])
+		if err != nil {
+			return nil, 0, err
+		}
+		if agents > math.MaxInt-total {
+			return nil, 0, errors.New("total scenario agents exceeds the supported range")
+		}
+		total += agents
+		scenarios = append(scenarios, scenarioConfig{Name: name, Agents: agents, Profiles: profiles, Workflow: workflow})
+	}
+	return scenarios, total, nil
+}
 
 func readJSON(r *http.Request) (map[string]any, error) {
 	if !strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]), "application/json") {
@@ -158,22 +209,34 @@ func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
 			return config, err
 		}
 	}
-	profiles := body["profiles"]
-	if profiles == nil {
-		profiles = []any{map[string]any{}}
-	}
-	if config.Profiles, err = parseProfiles(profiles); err != nil {
-		return config, err
-	}
-	workflow := body["workflow"]
-	if workflow == nil {
-		workflow = []any{map[string]any{"action": "request"}}
-	}
-	if config.Workflow, err = parseWorkflow(workflow); err != nil {
-		return config, err
-	}
-	if config.Agents, err = number(body, "agents", 1, 1); err != nil {
-		return config, err
+	if scenarios, present := body["scenarios"]; present {
+		for _, key := range []string{"agents", "profiles", "workflow"} {
+			if _, mixed := body[key]; mixed {
+				return config, errors.New("scenarios cannot be combined with top-level agents, profiles, or workflow")
+			}
+		}
+		config.Scenarios, config.Agents, err = parseScenarios(scenarios)
+		if err != nil {
+			return config, err
+		}
+	} else {
+		profiles := body["profiles"]
+		if profiles == nil {
+			profiles = []any{map[string]any{}}
+		}
+		if config.Profiles, err = parseProfiles(profiles); err != nil {
+			return config, err
+		}
+		workflow := body["workflow"]
+		if workflow == nil {
+			workflow = []any{map[string]any{"action": "request"}}
+		}
+		if config.Workflow, err = parseWorkflow(workflow); err != nil {
+			return config, err
+		}
+		if config.Agents, err = number(body, "agents", 1, 1); err != nil {
+			return config, err
+		}
 	}
 	if config.Concurrency, err = number(body, "concurrency", 10, 1); err != nil {
 		return config, err

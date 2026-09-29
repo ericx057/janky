@@ -105,6 +105,34 @@ curl -s "http://127.0.0.1:3000/runs/${RUN_ID}"
 
 The response reports agent totals and request metrics, including successes, failures, retries, timeouts, average latency, and p95 latency. `/events` streams live lifecycle and request events; `/metrics` exposes Prometheus text metrics. For more workload examples, see [use cases](docs/use-cases.md) and [methodology](docs/methodology.md).
 
+### Several teams in one run
+
+Use `scenarios` to give each team its own agent count, profiles, and ordered workflow. The scenarios share the run's target URL, arrival rate, and concurrency limit. Agents from the scenarios are interleaved; the target receives a `scenario` field in each request. The run status includes agent counts for each scenario as well as the existing totals.
+
+```json
+{
+  "target_url": "http://127.0.0.1:4000/events",
+  "concurrency": 20,
+  "arrival_rate": 10,
+  "scenarios": [
+    {
+      "name": "sales",
+      "agents": 50,
+      "profiles": [{"team": "sales"}],
+      "workflow": [{"action": "find_lead"}, {"action": "create_quote"}]
+    },
+    {
+      "name": "support",
+      "agents": 50,
+      "profiles": [{"team": "support"}],
+      "workflow": [{"action": "find_ticket"}, {"action": "reply"}]
+    }
+  ]
+}
+```
+
+Submit this JSON to `POST /runs`. Scenario names must be unique and use letters, numbers, `_`, `.`, or `-`. Each scenario must specify `agents`, `profiles`, and `workflow`. The original single-workflow format still works; a request with `scenarios` cannot also set top-level `agents`, `profiles`, or `workflow`.
+
 ## Capacity and safety
 
 Janky has no fixed count caps on agents, concurrency, arrival rate, profiles, workflow steps, retries, or simultaneous workloads. Configuration requests are limited to 64 KiB. Large workloads use more CPU, memory, and sockets, and can overwhelm the target; start with a workload appropriate for the environment and monitor both sides. Use synthetic data when testing services that contain user information.
