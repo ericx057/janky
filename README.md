@@ -1,14 +1,32 @@
 # Agent workflow stress tester
 
-A dependency-free HTTP toolkit for replaying agent-shaped workflows against a caller-selected HTTP endpoint. It uses state machines, not an LLM. Agents keep a workflow identity, carry caller-defined context, pause between steps, retry throttled or failed requests, and issue real HTTP requests. A fleet uses virtual agents in one Node process with bounded concurrency.
+A dependency-free Go HTTP toolkit for replaying agent-shaped workflows against a caller-selected HTTP endpoint. It uses state machines, not an LLM. Agents keep a workflow identity, carry caller-defined context, pause between steps, retry throttled or failed requests, and issue real HTTP requests. A fleet uses goroutines in one process with bounded concurrency.
 
 ## Run
 
 ```sh
-node cli.mjs 3000
+go run . 3000
 ```
 
-The control API listens on the loopback port passed to `cli.mjs`. Outbound targets are restricted to `127.0.0.1`, `localhost`, and `::1` by default. To test another host, set `ALLOWED_TARGET_HOSTS=api.example.test`. Treat the control API as trusted local tooling if embedding `createApp()` in another server.
+The control API listens on the loopback port passed to the Go command. Outbound targets are restricted to `127.0.0.1`, `localhost`, and `::1` by default. To test another host, set `ALLOWED_TARGET_HOSTS=api.example.test`. Treat the control API as trusted local tooling.
+
+## JavaScript SDK
+
+Import the dependency-free ESM client from `sdk.mjs` in Node.js:
+
+```js
+import { createClient } from './sdk.mjs';
+
+const client = createClient('http://127.0.0.1:3000');
+const { run_id } = await client.startRun({
+  target_url: 'http://127.0.0.1:4000/events',
+  agents: 100,
+  workflow: [{ action: 'lookup', input: { record: 'synthetic-1' } }],
+});
+console.log(await client.getRun(run_id));
+```
+
+`startRun()` returns when the run is accepted; call `getRun(run_id)` again to see progress or completion. The client also provides `invokeAgent(id, options)`, `getStatus()`, `getMetrics()` (Prometheus text), and `health()`. `events()` yields parsed live events until its `{ signal }` is aborted or the stream closes. Each method accepts an optional final `{ signal }` argument. HTTP errors reject with the API message and a numeric `status` property.
 
 ## Single agent
 
@@ -34,7 +52,6 @@ curl -s http://127.0.0.1:3000/runs \
     "telemetry_url":"http://127.0.0.1:4000/metrics",
     "agents":1000,
     "concurrency":100,
-    "workers":4,
     "arrival_rate":200,
     "think_ms":100,
     "jitter_ms":250,
@@ -65,13 +82,13 @@ The response contains a `run_id` and `status_url`. Profiles rotate across agents
 }
 ```
 
-The caller defines every profile, workflow action, input, and expected status; the toolkit assigns no roles or policies. Use synthetic context and inputs. `workers` splits a fleet across Node worker threads while keeping the configured `concurrency` as the total cap; fleets of at least 1,000 agents use up to four workers by default. Limits: 10,000 agents, 256 concurrent agents, eight workers, 100 profiles, 32 steps, five retries, and one active run per process. Run a second process or host when generator CPU/network overhead skews the target measurements.
+The caller defines every profile, workflow action, input, and expected status; the toolkit assigns no roles or policies. Use synthetic context and inputs. Go schedules agents as goroutines; `concurrency` is the total cap. The `workers` setting is accepted for compatibility with the earlier JavaScript server but is unused. Limits: 10,000 agents, 256 concurrent agents, 100 profiles, 32 steps, five retries, and one active run per process. Run a second process or host when generator CPU/network overhead skews the target measurements.
 
 Fleet configurations are discarded when a run finishes. Run summaries retain counts, latency samples, and any configured target telemetry; they do not retain individual request or response bodies.
 
 ### Ports and connections
 
-The generator sends requests to one configured target host and port. `concurrency` limits simultaneous workflow requests, not the number of destination hosts or ports. Node's `fetch` manages its HTTP connections; concurrent requests may use multiple connections to that same host. A single listening port can accept them all, so separate ports are not needed to scale this test. This sends ordinary HTTP requests, not multiple request streams over one HTTP/2 connection. The target's server, proxy, and operating system may impose their own connection or request limits; monitor those alongside the generator metrics.
+The generator sends requests to one configured target host and port. `concurrency` limits simultaneous workflow requests, not the number of destination hosts or ports. Go's HTTP client manages its connections; concurrent requests may use multiple connections to that same host, and HTTPS may use HTTP/2 if negotiated. A single listening port can accept them all. The target's server, proxy, and operating system may impose their own connection or request limits; monitor those alongside the generator metrics.
 
 ## Observe
 
@@ -87,7 +104,9 @@ curl -s http://127.0.0.1:3000/runs/RUN_ID
 ## Check
 
 ```sh
-node --test --experimental-test-coverage --test-coverage-exclude=test.mjs \
+go test -race -coverprofile=/tmp/janky.cover ./...
+go tool cover -func=/tmp/janky.cover | awk '$1 == "total:" && $3 == "100.0%" { ok = 1 } END { exit !ok }'
+node --test --experimental-test-coverage --test-coverage-exclude=sdk.test.mjs \
   --test-coverage-lines=100 --test-coverage-branches=100 \
-  --test-coverage-functions=100 test.mjs
+  --test-coverage-functions=100 sdk.test.mjs
 ```
