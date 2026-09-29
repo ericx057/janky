@@ -24,11 +24,12 @@ type step struct {
 }
 
 type scenarioConfig struct {
-	Name      string
-	Agents    int
-	Profiles  []map[string]any
-	Workflow  []step
-	TargetURL string
+	Name                     string
+	Agents                   int
+	ArrivalRate, Concurrency int
+	Profiles                 []map[string]any
+	Workflow                 []step
+	TargetURL                string
 }
 
 type runConfig struct {
@@ -69,6 +70,14 @@ func parseScenarios(value any) ([]scenarioConfig, int, error) {
 		if err != nil {
 			return nil, 0, err
 		}
+		arrivalRate, err := number(item, "arrival_rate", 0, 1)
+		if err != nil {
+			return nil, 0, err
+		}
+		concurrency, err := number(item, "concurrency", 0, 1)
+		if err != nil {
+			return nil, 0, err
+		}
 		profiles, err := parseProfiles(item["profiles"])
 		if err != nil {
 			return nil, 0, err
@@ -88,7 +97,8 @@ func parseScenarios(value any) ([]scenarioConfig, int, error) {
 			return nil, 0, errors.New("total scenario agents exceeds the supported range")
 		}
 		total += agents
-		scenarios = append(scenarios, scenarioConfig{Name: name, Agents: agents, Profiles: profiles, Workflow: workflow, TargetURL: target})
+		scenarios = append(scenarios, scenarioConfig{Name: name, Agents: agents, ArrivalRate: arrivalRate, Concurrency: concurrency,
+			Profiles: profiles, Workflow: workflow, TargetURL: target})
 	}
 	return scenarios, total, nil
 }

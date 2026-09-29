@@ -233,6 +233,30 @@ func TestParseRunScenarios(t *testing.T) {
 	}
 }
 
+func TestParseScenarioPacing(t *testing.T) {
+	allowed := map[string]bool{"example.com": true}
+	item := map[string]any{"name": "sales", "agents": json.Number("2"), "profiles": []any{map[string]any{}},
+		"workflow": []any{map[string]any{"action": "read"}}, "arrival_rate": json.Number("25"), "concurrency": json.Number("2")}
+	config, err := parseRun(map[string]any{"target_url": "http://example.com", "arrival_rate": json.Number("10"),
+		"concurrency": json.Number("4"), "scenarios": []any{item}}, allowed)
+	if err != nil || config.Scenarios[0].ArrivalRate != 25 || config.Scenarios[0].Concurrency != 2 {
+		t.Fatalf("scenario pacing: %#v err=%v", config.Scenarios, err)
+	}
+	for _, key := range []string{"arrival_rate", "concurrency"} {
+		for _, value := range []any{json.Number("0"), json.Number("-1"), "bad"} {
+			invalid := map[string]any{"name": "sales", "agents": json.Number("1"), "profiles": item["profiles"], "workflow": item["workflow"], key: value}
+			if _, err := parseRun(map[string]any{"target_url": "http://example.com", "scenarios": []any{invalid}}, allowed); err == nil {
+				t.Fatalf("accepted %s=%v", key, value)
+			}
+		}
+	}
+	item = map[string]any{"name": "sales", "agents": json.Number("1"), "profiles": item["profiles"], "workflow": item["workflow"]}
+	config, err = parseRun(map[string]any{"target_url": "http://example.com", "scenarios": []any{item}}, allowed)
+	if err != nil || config.Scenarios[0].ArrivalRate != 0 || config.Scenarios[0].Concurrency != 0 {
+		t.Fatalf("legacy pacing changed: %#v err=%v", config.Scenarios, err)
+	}
+}
+
 func TestParseRunNamedTargets(t *testing.T) {
 	allowed := map[string]bool{"example.com": true}
 	base := map[string]any{

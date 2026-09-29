@@ -107,7 +107,7 @@ The response reports agent totals and request metrics, including successes, fail
 
 ### Several teams in one run
 
-Use `scenarios` to give each team its own agent count, profiles, and ordered workflow. The scenarios share the run's arrival rate and concurrency limit. Agents from the scenarios are interleaved; each target receives a `scenario` field in its requests. The run status includes agent counts for each scenario as well as the existing totals.
+Use `scenarios` to give each team its own agent count, profiles, and ordered workflow. By default, scenarios share the run's arrival rate and concurrency limit, and their agents are interleaved. Each target receives a `scenario` field in its requests. The run status includes agent counts for each scenario as well as the existing totals.
 
 ```json
 {
@@ -132,6 +132,8 @@ Use `scenarios` to give each team its own agent count, profiles, and ordered wor
 ```
 
 Submit this JSON to `POST /runs`. Scenario names must be unique and use letters, numbers, `_`, `.`, or `-`. Each scenario must specify `agents`, `profiles`, and `workflow`. The original single-workflow format still works; a request with `scenarios` cannot also set top-level `agents`, `profiles`, or `workflow`.
+
+To pace teams independently, set `arrival_rate` or `concurrency` on a scenario. For example, add `"arrival_rate": 6, "concurrency": 4` to `sales` and `"arrival_rate": 2, "concurrency": 2` to `support` above. When any scenario sets either field, every scenario gets its own arrival schedule; omitted values inherit the run's values. The top-level `concurrency` remains a hard limit across the whole run. Arrival rates are scheduling targets: busy agents can delay later starts when a concurrency limit is full.
 
 ### Route workflows to different services
 

@@ -2,10 +2,12 @@ package stress
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -183,5 +185,98 @@ func TestFleetSamplesTelemetryWhileRunning(t *testing.T) {
 	s.runFleet(run, runConfig{TargetURL: "http://localhost/", TelemetryURL: "http://localhost/telemetry", Profiles: []map[string]any{{}}, Workflow: []step{{Action: "read"}}, Agents: 1, Concurrency: 1, ArrivalRate: 1000, TimeoutMS: 2000, Retries: 0})
 	if run.State != "completed" || samples.Load() < 2 {
 		t.Fatalf("telemetry samples=%d run=%+v", samples.Load(), run)
+	}
+}
+
+func TestIndependentScenarioPacingAndConcurrency(t *testing.T) {
+	s := NewServer(nil).(*server)
+	var mu sync.Mutex
+	starts := map[string][]time.Time{}
+	active := map[string]int{}
+	peak := map[string]int{}
+	global, globalPeak := 0, 0
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var event struct {
+			Scenario string `json:"scenario"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		starts[event.Scenario] = append(starts[event.Scenario], time.Now())
+		active[event.Scenario]++
+		global++
+		peak[event.Scenario] = max(peak[event.Scenario], active[event.Scenario])
+		globalPeak = max(globalPeak, global)
+		mu.Unlock()
+		time.Sleep(80 * time.Millisecond)
+		mu.Lock()
+		active[event.Scenario]--
+		global--
+		mu.Unlock()
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	config := runConfig{Agents: 4, Concurrency: 2, ArrivalRate: 10, JitterMS: 0, TimeoutMS: 1000,
+		Scenarios: []scenarioConfig{
+			{Name: "fast", Agents: 2, ArrivalRate: 100, Concurrency: 1, Profiles: []map[string]any{{}}, Workflow: []step{{Action: "read", TargetURL: "http://localhost/"}}},
+			{Name: "slow", Agents: 2, ArrivalRate: 5, Concurrency: 1, Profiles: []map[string]any{{}}, Workflow: []step{{Action: "read", TargetURL: "http://localhost/"}}},
+		}}
+	run := &runState{ID: "r", Scenarios: map[string]*agentCounts{"fast": {}, "slow": {}}}
+	runStarted := time.Now()
+	s.runFleet(run, config)
+	if run.Agents.Completed != 4 || len(starts["fast"]) != 2 || len(starts["slow"]) != 2 ||
+		peak["fast"] > 1 || peak["slow"] > 1 || globalPeak > 2 {
+		t.Fatalf("counts=%+v starts=%v peaks=%v global=%d", run.Agents, starts, peak, globalPeak)
+	}
+	if starts["slow"][1].Before(runStarted.Add(150 * time.Millisecond)) {
+		t.Fatalf("independent arrival rates not honored: %v", starts)
+	}
+}
+
+func TestScenarioCapacityBoundedByRun(t *testing.T) {
+	if scenarioCapacity(1_000_000_000, 1_000_000_000, 1) != 1 || scenarioCapacity(3, 10, 5) != 3 {
+		t.Fatal("scenario capacity exceeded local or run limit")
+	}
+}
+
+func TestLegacyScenarioPacingOrder(t *testing.T) {
+	s := NewServer(nil).(*server)
+	var order []string
+	s.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var event struct {
+			Scenario string `json:"scenario"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			return nil, err
+		}
+		order = append(order, event.Scenario)
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	config := runConfig{Agents: 4, Concurrency: 1, ArrivalRate: 1000, JitterMS: 0, TimeoutMS: 1000,
+		Scenarios: []scenarioConfig{
+			{Name: "a", Agents: 2, Profiles: []map[string]any{{}}, Workflow: []step{{Action: "read", TargetURL: "http://localhost/"}}},
+			{Name: "b", Agents: 2, Profiles: []map[string]any{{}}, Workflow: []step{{Action: "read", TargetURL: "http://localhost/"}}},
+		}}
+	run := &runState{ID: "r", Scenarios: map[string]*agentCounts{"a": {}, "b": {}}}
+	s.runFleet(run, config)
+	if strings.Join(order, ",") != "a,b,a,b" {
+		t.Fatalf("legacy order: %v", order)
+	}
+}
+
+func TestScenarioPacingInheritsRunSettings(t *testing.T) {
+	s := NewServer(nil).(*server)
+	s.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	config := runConfig{Agents: 2, Concurrency: 2, ArrivalRate: 1000, TimeoutMS: 1000,
+		Scenarios: []scenarioConfig{
+			{Name: "rate", Agents: 1, ArrivalRate: 10, Profiles: []map[string]any{{}}, Workflow: []step{{Action: "read", TargetURL: "http://localhost/"}}},
+			{Name: "limit", Agents: 1, Concurrency: 1, Profiles: []map[string]any{{}}, Workflow: []step{{Action: "read", TargetURL: "http://localhost/"}}},
+		}}
+	run := &runState{ID: "r", Scenarios: map[string]*agentCounts{"rate": {}, "limit": {}}}
+	s.runFleet(run, config)
+	if run.Agents.Completed != 2 {
+		t.Fatalf("inherited pacing failed: %+v", run.Agents)
 	}
 }

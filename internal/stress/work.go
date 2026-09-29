@@ -269,6 +269,43 @@ func (s *server) runAgent(run *runState, config runConfig, index, profileIndex i
 	s.runEvent(run, finishedEvent)
 }
 
+func scenarioCapacity(concurrency, agents, global int) int {
+	return min(concurrency, agents, global)
+}
+
+func (s *server) scheduleScenario(run *runState, config runConfig, scenario scenarioConfig, offset int,
+	start time.Time, limit chan struct{}, agents *sync.WaitGroup) {
+	rate := scenario.ArrivalRate
+	if rate == 0 {
+		rate = config.ArrivalRate
+	}
+	concurrency := scenario.Concurrency
+	if concurrency == 0 {
+		concurrency = config.Concurrency
+	}
+	local := make(chan struct{}, scenarioCapacity(concurrency, scenario.Agents, cap(limit)))
+	agentConfig := config
+	agentConfig.Name = scenario.Name
+	agentConfig.Profiles = scenario.Profiles
+	agentConfig.Workflow = scenario.Workflow
+	agentConfig.TargetURL = scenario.TargetURL
+	for index := 0; index < scenario.Agents; index++ {
+		jitter := randomSource(uint32(config.Seed + offset + index))
+		due := float64(index)*1000/float64(rate) + jitter.next()*float64(config.JitterMS)
+		if wait := time.Until(start.Add(millisecondsDuration(due))); wait > 0 {
+			time.Sleep(wait)
+		}
+		local <- struct{}{}
+		limit <- struct{}{}
+		agents.Add(1)
+		go func(index int) {
+			defer agents.Done()
+			defer func() { <-limit; <-local }()
+			s.runAgent(run, agentConfig, offset+index, index)
+		}(index)
+	}
+}
+
 func (s *server) runFleet(run *runState, config runConfig) {
 	stopTelemetry := make(chan struct{})
 	var telemetryDone sync.WaitGroup
@@ -293,36 +330,57 @@ func (s *server) runFleet(run *runState, config runConfig) {
 	concurrency := min(config.Concurrency, config.Agents)
 	limit := make(chan struct{}, concurrency)
 	var agents sync.WaitGroup
-	positions := make([]int, len(config.Scenarios))
-	slot := 0
-	for index := 0; index < config.Agents; index++ {
-		jitter := randomSource(uint32(config.Seed + index))
-		due := float64(index)*1000/float64(config.ArrivalRate) + jitter.next()*float64(config.JitterMS)
-		if wait := time.Until(start.Add(millisecondsDuration(due))); wait > 0 {
-			time.Sleep(wait)
+	independent := false
+	for _, scenario := range config.Scenarios {
+		if scenario.ArrivalRate > 0 || scenario.Concurrency > 0 {
+			independent = true
+			break
 		}
-		limit <- struct{}{}
-		agentConfig := config
-		profileIndex := index
-		if len(config.Scenarios) > 0 {
-			for positions[slot] >= config.Scenarios[slot].Agents {
+	}
+	if independent {
+		var schedules sync.WaitGroup
+		offset := 0
+		for _, scenario := range config.Scenarios {
+			schedules.Add(1)
+			go func(scenario scenarioConfig, offset int) {
+				defer schedules.Done()
+				s.scheduleScenario(run, config, scenario, offset, start, limit, &agents)
+			}(scenario, offset)
+			offset += scenario.Agents
+		}
+		schedules.Wait()
+	} else {
+		positions := make([]int, len(config.Scenarios))
+		slot := 0
+		for index := 0; index < config.Agents; index++ {
+			jitter := randomSource(uint32(config.Seed + index))
+			due := float64(index)*1000/float64(config.ArrivalRate) + jitter.next()*float64(config.JitterMS)
+			if wait := time.Until(start.Add(millisecondsDuration(due))); wait > 0 {
+				time.Sleep(wait)
+			}
+			limit <- struct{}{}
+			agentConfig := config
+			profileIndex := index
+			if len(config.Scenarios) > 0 {
+				for positions[slot] >= config.Scenarios[slot].Agents {
+					slot = (slot + 1) % len(config.Scenarios)
+				}
+				scenario := config.Scenarios[slot]
+				agentConfig.Name = scenario.Name
+				agentConfig.Profiles = scenario.Profiles
+				agentConfig.Workflow = scenario.Workflow
+				agentConfig.TargetURL = scenario.TargetURL
+				profileIndex = positions[slot]
+				positions[slot]++
 				slot = (slot + 1) % len(config.Scenarios)
 			}
-			scenario := config.Scenarios[slot]
-			agentConfig.Name = scenario.Name
-			agentConfig.Profiles = scenario.Profiles
-			agentConfig.Workflow = scenario.Workflow
-			agentConfig.TargetURL = scenario.TargetURL
-			profileIndex = positions[slot]
-			positions[slot]++
-			slot = (slot + 1) % len(config.Scenarios)
+			agents.Add(1)
+			go func(index, profileIndex int, agentConfig runConfig) {
+				defer agents.Done()
+				defer func() { <-limit }()
+				s.runAgent(run, agentConfig, index, profileIndex)
+			}(index, profileIndex, agentConfig)
 		}
-		agents.Add(1)
-		go func(index, profileIndex int, agentConfig runConfig) {
-			defer agents.Done()
-			defer func() { <-limit }()
-			s.runAgent(run, agentConfig, index, profileIndex)
-		}(index, profileIndex, agentConfig)
 	}
 	agents.Wait()
 	close(stopTelemetry)
