@@ -48,37 +48,37 @@ Each step is a JSON `POST` containing the agent ID, selected profile, workflow I
 
 ### How Janky represents an agent
 
-An agent is a simulated identity plus a profile and an ordered workflow. For scenario runs, Janky creates the configured number of agents for each scenario; each gets a profile from that scenario and follows its workflow in order. It does not call an LLM, choose tools, or derive its next action from the target's response.
+An agent is a simulated identity plus a profile and an ordered workflow. For a fleet run, Janky creates the configured number of agents; each gets a profile from the configured list and follows the workflow in order. It does not call an LLM, choose tools, or derive its next action from the target's response.
 
 ```mermaid
-flowchart LR
-    S[Scenario: support] --> A[Virtual agent: run-1]
-    S --> B[Virtual agent: run-2]
-    S --> P[Profile pool]
-    S --> W[Ordered workflow]
-    A --> PA[Selected profile]
-    B --> PB[Selected profile]
-    A --> W
-    B --> W
-    W --> X[Step 1: find_ticket]
-    X --> Y[POST action, profile, input, workflow position]
-    Y --> Z{Expected response?}
-    Z -- yes --> N[Advance to next step]
-    Z -- retryable error --> R[Retry within configured limit]
-    Z -- no --> F[Agent finishes as failed]
-    N --> X2[Next workflow step]
+flowchart TD
+    C[Run configuration] --> S[Scheduler creates virtual agents]
+    C --> P[Profile list]
+    C --> W[Ordered workflow steps]
+    S --> A[One virtual agent: ID + selected profile]
+    P --> A
+    A --> I[Current workflow step]
+    W --> I
+    I --> Q[Send HTTP POST with agent, action, and input]
+    Q --> R{Response matches expected status?}
+    R -- yes --> N{More steps?}
+    N -- yes --> I
+    N -- no --> D[Agent completes]
+    R -- no, retryable --> T{Retries remain?}
+    T -- yes --> Q
+    T -- no --> F[Agent fails]
 ```
 
-For example, this scenario defines the inputs Janky uses to represent each support agent:
+For example, this configuration defines the inputs Janky uses to represent each virtual agent:
 
 ```json
 {
-  "name": "support",
+  "name": "example",
   "agents": 50,
-  "profiles": [{"team": "support", "tier": "standard"}],
+  "profiles": [{"group": "A", "level": "standard"}],
   "workflow": [
-    {"action": "find_ticket", "input": {"ticket": "synthetic-1"}},
-    {"action": "reply", "input": {"text": "Please try again."}}
+    {"action": "step_one", "input": {"value": "example"}},
+    {"action": "step_two", "input": {"value": "example"}}
   ]
 }
 ```
