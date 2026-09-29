@@ -308,3 +308,62 @@ func TestParseRunNamedTargets(t *testing.T) {
 		t.Fatalf("step-only scenario target: %#v err=%v", config.Scenarios, err)
 	}
 }
+
+func TestParseRunThresholds(t *testing.T) {
+	allowed := map[string]bool{"example.com": true}
+	scenario := map[string]any{"name": "sales", "agents": json.Number("1"), "profiles": []any{map[string]any{}},
+		"target": "primary", "workflow": []any{map[string]any{"action": "read"}, map[string]any{"action": "write", "target": "secondary"}}}
+	base := func() map[string]any {
+		return map[string]any{"targets": map[string]any{"primary": "https://example.com/one", "secondary": "https://example.com/two"},
+			"scenarios": []any{scenario}}
+	}
+	body := base()
+	body["thresholds"] = []any{
+		map[string]any{"metric": "failed_rate", "max": json.Number("0.1"), "tags": map[string]any{"scenario": "sales", "action": "read", "target": "primary"}},
+		map[string]any{"metric": "latency_p95_ms", "max": json.Number("250")},
+		map[string]any{"metric": "timeouts", "max": json.Number("0")},
+	}
+	config, err := parseRun(body, allowed)
+	if err != nil || len(config.Thresholds) != 3 || config.Thresholds[0].Metric != "failed_rate" ||
+		config.Thresholds[0].Max != 0.1 || config.Thresholds[0].Scenario != "sales" ||
+		config.Thresholds[0].Action != "read" || config.Thresholds[0].Target != "primary" ||
+		config.Thresholds[1].Max != 250 || config.Thresholds[2].Max != 0 {
+		t.Fatalf("thresholds=%#v err=%v", config.Thresholds, err)
+	}
+	if config.Scenarios[0].Workflow[0].TargetName != "primary" || config.Scenarios[0].Workflow[1].TargetName != "secondary" {
+		t.Fatalf("target names not preserved: %#v", config.Scenarios[0].Workflow)
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"wrong array type", map[string]any{}}, {"wrong entry type", []any{"bad"}},
+		{"missing metric", []any{map[string]any{"max": json.Number("0")}}},
+		{"unknown metric", []any{map[string]any{"metric": "requests", "max": json.Number("0")}}},
+		{"missing max", []any{map[string]any{"metric": "timeouts"}}},
+		{"wrong max type", []any{map[string]any{"metric": "timeouts", "max": "1"}}},
+		{"negative max", []any{map[string]any{"metric": "timeouts", "max": json.Number("-1")}}},
+		{"infinite max", []any{map[string]any{"metric": "timeouts", "max": json.Number("1e999")}}},
+		{"failed rate above one", []any{map[string]any{"metric": "failed_rate", "max": json.Number("1.1")}}},
+		{"unknown field", []any{map[string]any{"metric": "timeouts", "max": json.Number("0"), "x": true}}},
+		{"wrong tags type", []any{map[string]any{"metric": "timeouts", "max": json.Number("0"), "tags": []any{}}}},
+		{"unknown tag", []any{map[string]any{"metric": "timeouts", "max": json.Number("0"), "tags": map[string]any{"team": "sales"}}}},
+		{"wrong tag value", []any{map[string]any{"metric": "timeouts", "max": json.Number("0"), "tags": map[string]any{"action": 1}}}},
+		{"unknown scenario", []any{map[string]any{"metric": "timeouts", "max": json.Number("0"), "tags": map[string]any{"scenario": "missing"}}}},
+		{"unknown action", []any{map[string]any{"metric": "timeouts", "max": json.Number("0"), "tags": map[string]any{"action": "missing"}}}},
+		{"unknown target", []any{map[string]any{"metric": "timeouts", "max": json.Number("0"), "tags": map[string]any{"target": "missing"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := base()
+			body["thresholds"] = tc.value
+			if _, err := parseRun(body, allowed); err == nil {
+				t.Fatal("accepted invalid threshold")
+			}
+		})
+	}
+	config, err = parseRun(map[string]any{"target_url": "https://example.com", "thresholds": []any{
+		map[string]any{"metric": "timeouts", "max": json.Number("1"), "tags": map[string]any{"action": "request"}}}}, allowed)
+	if err != nil || config.Workflow[0].TargetName != "" || len(config.Thresholds) != 1 {
+		t.Fatalf("default workflow threshold=%#v err=%v", config, err)
+	}
+}

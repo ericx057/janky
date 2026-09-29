@@ -26,7 +26,7 @@ The configured retry count is the maximum number of retries after an initial att
 
 ## Observe results
 
-`/runs/{id}` and `/status` include agent counts and request counters, including success/failure, throttling, server errors, timeouts, retries, expectation failures, average latency, and client-observed p95 latency. `/events` streams request and agent lifecycle events. `/metrics` emits Prometheus text.
+`/runs/{id}` and `/status` include agent counts and request counters, including success/failure, throttling, server errors, timeouts, retries, expectation failures, average latency, and client-observed p95 latency. Run snapshots also group request attempts by scenario, action, and named target. Optional thresholds check matching attempts when a run finishes; a failed or unmatched threshold sets the run state to `failed`. `/events` streams request and agent lifecycle events. `/metrics` emits aggregate Prometheus text.
 
 An optional `telemetry_url` is sampled once per second during a fleet run. It must be on an allowed target host; responses up to 16 KiB are retained in run/status snapshots as JSON or text. This is supplied target telemetry, not an estimate of target internals.
 

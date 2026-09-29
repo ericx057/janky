@@ -28,6 +28,10 @@ type runState struct {
 	Agents               agentCounts
 	Scenarios            map[string]*agentCounts
 	Metrics              metrics
+	Tagged               map[requestTags]*metrics
+	ThresholdChecks      []thresholdConfig
+	ThresholdResults     []map[string]any
+	ThresholdsPassed     *bool
 	Telemetry            any
 }
 
@@ -175,6 +179,11 @@ func (s *server) runSnapshot(run *runState) map[string]any {
 		"agents":   map[string]int{"started": run.Agents.Started, "completed": run.Agents.Completed, "failed": run.Agents.Failed},
 		"requests": run.Metrics.snapshot(), "started_at": run.StartedAt,
 		"finished_at": run.FinishedAt, "target_telemetry": run.Telemetry, "error": errorValue,
+		"tagged_requests": taggedSnapshot(run.Tagged),
+	}
+	if len(run.ThresholdChecks) > 0 {
+		result["thresholds"] = run.ThresholdResults
+		result["thresholds_passed"] = run.ThresholdsPassed
 	}
 	if len(run.Scenarios) > 0 {
 		scenarios := make(map[string]any, len(run.Scenarios))
@@ -252,7 +261,8 @@ func (s *server) startRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	run := &runState{ID: uuid(), State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	run := &runState{ID: uuid(), State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Tagged: make(map[requestTags]*metrics), ThresholdChecks: config.Thresholds}
 	if len(config.Scenarios) > 0 {
 		run.Scenarios = make(map[string]*agentCounts, len(config.Scenarios))
 		for _, scenario := range config.Scenarios {
@@ -273,7 +283,7 @@ func (s *server) trimRuns() {
 	for len(s.runOrder) > 100 {
 		oldestCompleted := -1
 		for index, id := range s.runOrder {
-			if s.runs[id].State == "completed" {
+			if s.runs[id].State != "running" {
 				oldestCompleted = index
 				break
 			}

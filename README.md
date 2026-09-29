@@ -14,7 +14,7 @@ Tools such as [k6](https://grafana.com/docs/k6/latest/using-k6/scenarios/) are e
 
 For an agent-facing service, the useful unit is often one agent completing a task: a stable agent identity and profile, an ordered sequence of named actions and inputs, an expected response at each step, and a consistent retry policy. Janky treats that sequence as the test case. With a general-purpose load tester, you can build the same behavior in a script, but the script must define and maintain that agent state machine and request envelope itself.
 
-Use Janky when you want to exercise an agent workflow through your HTTP adapter without running real LLMs or writing a custom load-test harness for the workflow. Use k6 or another general-purpose tester when you need its broader protocol support, detailed performance thresholds, or traffic models beyond Janky's scripted HTTP workflows. They solve related problems and can be used at different stages of testing.
+Use Janky when you want to exercise an agent workflow through your HTTP adapter without running real LLMs or writing a custom load-test harness for the workflow. Use k6 or another general-purpose tester when you need broader protocol support, threshold expressions, or traffic models beyond Janky's scripted HTTP workflows. They solve related problems and can be used at different stages of testing.
 
 ## How an agent run works
 
@@ -168,6 +168,22 @@ Define named HTTP endpoints in `targets`. A scenario's `target` selects its defa
 ```
 
 Target names use the same characters as scenario names. All endpoint URLs must use HTTP(S) and an allowed host. For workloads spanning live databases, point each target at the appropriate service or adapter; Janky sends HTTP requests to those endpoints.
+
+### Inspect tags and set thresholds
+
+Each run reports `tagged_requests`, grouping request attempts by configured scenario, action, and named target. Retries count as additional attempts. Tags do not include agent IDs, profiles, inputs, or endpoint URLs. `/metrics` keeps its existing aggregate Prometheus output.
+
+Add optional `thresholds` to a run to set upper bounds for failure rate, client-observed p95 latency in milliseconds, or timeout count. Tags filter which attempts a threshold checks; omit `tags` to check the whole run:
+
+```json
+"thresholds": [
+  {"metric": "failed_rate", "max": 0.01, "tags": {"scenario": "sales"}},
+  {"metric": "latency_p95_ms", "max": 500, "tags": {"action": "find_lead", "target": "crm"}},
+  {"metric": "timeouts", "max": 0}
+]
+```
+
+`failed_rate` is failed attempts divided by all matching attempts; expected non-2xx responses count as successes. A threshold with no matching attempts fails. After the run finishes, `/runs/{id}` reports each threshold's `actual` value and `passed` result, plus `thresholds_passed`. If any threshold fails, the run's `state` is `failed`. Latency p95 uses bounded samples, so it is an estimate for large workloads.
 
 ## Capacity and safety
 

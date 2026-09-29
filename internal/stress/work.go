@@ -85,12 +85,28 @@ func (s *server) dispatch(target string, event map[string]any, step step, timeou
 		return false
 	}
 	agent := event["agent"].(map[string]any)["id"].(string)
+	tags := requestTags{Action: step.Action, Target: step.TargetName}
+	if scenario, ok := event["scenario"].(string); ok {
+		tags.Scenario = scenario
+	}
+	var group *metrics
 	for attempt := 0; ; attempt++ {
 		started := time.Now()
 		s.mu.Lock()
 		s.global.InFlight++
 		if run != nil {
 			run.Metrics.InFlight++
+			if group == nil {
+				if run.Tagged == nil {
+					run.Tagged = make(map[requestTags]*metrics)
+				}
+				group = run.Tagged[tags]
+				if group == nil {
+					group = &metrics{}
+					run.Tagged[tags] = group
+				}
+			}
+			group.InFlight++
 		}
 		s.mu.Unlock()
 		startedEvent := map[string]any{"type": "request_started", "agent_id": agent, "action": step.Action}
@@ -130,6 +146,8 @@ func (s *server) dispatch(target string, event map[string]any, step step, timeou
 		if run != nil {
 			run.Metrics.InFlight--
 			run.Metrics.record(latency, status, timedOut, expected)
+			group.InFlight--
+			group.recordBounded(latency, status, timedOut, expected, 1000)
 		}
 		s.mu.Unlock()
 		requestEvent := map[string]any{"type": "request", "workflow_id": event["workflow_id"],
@@ -149,6 +167,7 @@ func (s *server) dispatch(target string, event map[string]any, step step, timeou
 		s.global.Retries++
 		if run != nil {
 			run.Metrics.Retries++
+			group.Retries++
 		}
 		s.mu.Unlock()
 		retryEvent := map[string]any{"type": "retry", "agent_id": agent}
@@ -387,8 +406,17 @@ func (s *server) runFleet(run *runState, config runConfig) {
 	telemetryDone.Wait()
 	s.mu.Lock()
 	run.State = "completed"
+	if len(run.ThresholdChecks) > 0 {
+		results, passed := evaluateThresholds(run.ThresholdChecks, run.Tagged)
+		run.ThresholdResults = results
+		run.ThresholdsPassed = &passed
+		if !passed {
+			run.State = "failed"
+			run.Error = "thresholds failed"
+		}
+	}
 	run.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	s.trimRuns()
 	s.mu.Unlock()
-	s.runEvent(run, map[string]any{"type": "run_finished", "state": "completed"})
+	s.runEvent(run, map[string]any{"type": "run_finished", "state": run.State})
 }

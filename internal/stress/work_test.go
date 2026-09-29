@@ -146,6 +146,10 @@ func TestFleetDispatchCountsRetries(t *testing.T) {
 	if !s.dispatch("http://localhost/", event, step{Action: "read"}, 100, 1, run) || attempts != 2 || run.Metrics.Retries != 1 {
 		t.Fatalf("fleet retry attempts=%d metrics=%+v", attempts, run.Metrics)
 	}
+	group := run.Tagged[requestTags{Scenario: "sales", Action: "read"}]
+	if group == nil || group.Total != 2 || group.Retries != 1 {
+		t.Fatalf("tagged retry metrics: %+v", group)
+	}
 	foundRetry := false
 	for len(listener) > 0 {
 		line := string(<-listener)

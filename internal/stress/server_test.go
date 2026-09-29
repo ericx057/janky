@@ -325,6 +325,89 @@ func TestNamedTargetRouting(t *testing.T) {
 	}
 }
 
+func TestRunThresholdsAndTaggedRequests(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var event struct {
+			Action string `json:"action"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Errorf("target body: %v", err)
+			return
+		}
+		switch event.Action {
+		case "fail":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "reply":
+			w.WriteHeader(http.StatusForbidden)
+		}
+	}))
+	defer target.Close()
+	app := httptest.NewServer(NewServer(nil))
+	defer app.Close()
+	response, created := postJSON(t, app.Client(), app.URL+"/runs", map[string]any{
+		"targets":  map[string]any{"crm": target.URL, "support": target.URL},
+		"think_ms": 0, "jitter_ms": 0, "retries": 0,
+		"scenarios": []any{
+			map[string]any{"name": "sales", "agents": 1, "target": "crm", "profiles": []any{map[string]any{}}, "workflow": []any{
+				map[string]any{"action": "lookup"}, map[string]any{"action": "fail", "target": "support"}, map[string]any{"action": "after"}}},
+			map[string]any{"name": "support", "agents": 1, "target": "support", "profiles": []any{map[string]any{}}, "workflow": []any{
+				map[string]any{"action": "reply", "expect_status": []int{403}}}},
+		},
+		"thresholds": []any{
+			map[string]any{"metric": "failed_rate", "max": 0, "tags": map[string]any{"scenario": "sales", "action": "fail", "target": "support"}},
+			map[string]any{"metric": "failed_rate", "max": 0, "tags": map[string]any{"scenario": "support"}},
+			map[string]any{"metric": "timeouts", "max": 0, "tags": map[string]any{"action": "after"}},
+		},
+	})
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("create run: %d %#v", response.StatusCode, created)
+	}
+	run := waitRun(t, app.Client(), app.URL, created["run_id"].(string))
+	if run["state"] != "failed" || run["thresholds_passed"] != false || field(t, run, "requests")["total"] != float64(3) {
+		t.Fatalf("threshold outcome: %#v", run)
+	}
+	checks, ok := run["thresholds"].([]any)
+	if !ok || len(checks) != 3 || field(t, checks[0].(map[string]any), "tags")["target"] != "support" ||
+		checks[0].(map[string]any)["passed"] != false || checks[1].(map[string]any)["passed"] != true ||
+		checks[2].(map[string]any)["actual"] != nil {
+		t.Fatalf("threshold results: %#v", checks)
+	}
+	series, ok := run["tagged_requests"].([]any)
+	if !ok || len(series) != 3 {
+		t.Fatalf("tagged requests: %#v", run["tagged_requests"])
+	}
+	for _, entry := range series {
+		group := entry.(map[string]any)
+		tags := field(t, group, "tags")
+		if tags["action"] == "fail" && (tags["target"] != "support" || field(t, group, "requests")["failed"] != float64(1)) {
+			t.Fatalf("failed request attribution: %#v", group)
+		}
+		if tags["action"] == "reply" && field(t, group, "requests")["expected_non_2xx"] != float64(1) {
+			t.Fatalf("expected response attribution: %#v", group)
+		}
+	}
+}
+
+func TestPassingThresholdKeepsRunCompleted(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	app := httptest.NewServer(NewServer(nil))
+	defer app.Close()
+	response, created := postJSON(t, app.Client(), app.URL+"/runs", map[string]any{
+		"target_url": target.URL, "agents": 1, "jitter_ms": 0,
+		"thresholds": []any{map[string]any{"metric": "failed_rate", "max": 0}},
+	})
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("create run: %d %#v", response.StatusCode, created)
+	}
+	run := waitRun(t, app.Client(), app.URL, created["run_id"].(string))
+	if run["state"] != "completed" || run["thresholds_passed"] != true {
+		t.Fatalf("passing threshold: %#v", run)
+	}
+}
+
 func TestDirectInvokeRejectsNamedTargetSelector(t *testing.T) {
 	app := httptest.NewServer(NewServer(nil))
 	defer app.Close()
@@ -763,10 +846,10 @@ func TestActiveRunsStayQueryableWhenHistoryIsFull(t *testing.T) {
 	if len(s.runs) != 101 || s.runs["0"] == nil {
 		t.Fatalf("active run evicted: %d", len(s.runs))
 	}
-	s.runs["0"].State = "completed"
+	s.runs["0"].State = "failed"
 	s.trimRuns()
 	if len(s.runs) != 100 || s.runs["0"] != nil {
-		t.Fatalf("completed run retained: %d", len(s.runs))
+		t.Fatalf("finished run retained: %d", len(s.runs))
 	}
 }
 

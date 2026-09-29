@@ -21,6 +21,13 @@ type step struct {
 	Input        map[string]any
 	ExpectStatus []int
 	TargetURL    string
+	TargetName   string
+}
+
+type thresholdConfig struct {
+	Metric                   string
+	Max                      float64
+	Scenario, Action, Target string
 }
 
 type scenarioConfig struct {
@@ -38,6 +45,7 @@ type runConfig struct {
 	Profiles                         []map[string]any
 	Workflow                         []step
 	Scenarios                        []scenarioConfig
+	Thresholds                       []thresholdConfig
 	Agents, Concurrency, ArrivalRate int
 	ThinkMS, JitterMS, TimeoutMS     int
 	Retries, Seed, Workers           int
@@ -224,21 +232,100 @@ func targetURL(value any, allowed map[string]bool) (string, error) {
 	return u.String(), nil
 }
 
-func resolveTargets(workflow []step, fallback string, targets map[string]string) error {
+func resolveTargets(workflow []step, fallback, fallbackName string, targets map[string]string) error {
 	for index := range workflow {
 		if workflow[index].TargetURL != "" {
-			url := targets[workflow[index].TargetURL]
+			name := workflow[index].TargetURL
+			url := targets[name]
 			if url == "" {
-				return fmt.Errorf("unknown target %q", workflow[index].TargetURL)
+				return fmt.Errorf("unknown target %q", name)
 			}
 			workflow[index].TargetURL = url
+			workflow[index].TargetName = name
 		} else if fallback == "" {
 			return errors.New("each workflow step needs a target or target_url")
 		} else {
 			workflow[index].TargetURL = fallback
+			workflow[index].TargetName = fallbackName
 		}
 	}
 	return nil
+}
+
+func parseThresholds(value any, config runConfig, targets map[string]string) ([]thresholdConfig, error) {
+	items, ok := value.([]any)
+	if !ok {
+		return nil, errors.New("thresholds must be an array")
+	}
+	validScenarios := map[string]bool{}
+	validActions := map[string]bool{}
+	for _, scenario := range config.Scenarios {
+		validScenarios[scenario.Name] = true
+		for _, item := range scenario.Workflow {
+			validActions[item.Action] = true
+		}
+	}
+	for _, item := range config.Workflow {
+		validActions[item.Action] = true
+	}
+	thresholds := make([]thresholdConfig, 0, len(items))
+	for _, value := range items {
+		item, ok := value.(map[string]any)
+		if !ok {
+			return nil, errors.New("threshold must be an object")
+		}
+		for key := range item {
+			if key != "metric" && key != "max" && key != "tags" {
+				return nil, fmt.Errorf("unknown threshold field %q", key)
+			}
+		}
+		metric, ok := item["metric"].(string)
+		if !ok || (metric != "failed_rate" && metric != "latency_p95_ms" && metric != "timeouts") {
+			return nil, errors.New("threshold metric must be failed_rate, latency_p95_ms, or timeouts")
+		}
+		number, ok := item["max"].(json.Number)
+		if !ok {
+			return nil, errors.New("threshold max must be a finite nonnegative number")
+		}
+		max, err := number.Float64()
+		if err != nil || math.IsNaN(max) || math.IsInf(max, 0) || max < 0 || (metric == "failed_rate" && max > 1) {
+			return nil, errors.New("threshold max must be finite, nonnegative, and at most 1 for failed_rate")
+		}
+		threshold := thresholdConfig{Metric: metric, Max: max}
+		if value, present := item["tags"]; present {
+			tags, ok := value.(map[string]any)
+			if !ok {
+				return nil, errors.New("threshold tags must be an object")
+			}
+			for key, value := range tags {
+				name, ok := value.(string)
+				if !ok || name == "" {
+					return nil, fmt.Errorf("threshold tag %q must be a configured name", key)
+				}
+				switch key {
+				case "scenario":
+					if !validScenarios[name] {
+						return nil, fmt.Errorf("unknown scenario %q", name)
+					}
+					threshold.Scenario = name
+				case "action":
+					if !validActions[name] {
+						return nil, fmt.Errorf("unknown action %q", name)
+					}
+					threshold.Action = name
+				case "target":
+					if targets[name] == "" {
+						return nil, fmt.Errorf("unknown target %q", name)
+					}
+					threshold.Target = name
+				default:
+					return nil, fmt.Errorf("unknown threshold tag %q", key)
+				}
+			}
+		}
+		thresholds = append(thresholds, threshold)
+	}
+	return thresholds, nil
 }
 
 func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
@@ -284,14 +371,15 @@ func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
 		for index := range config.Scenarios {
 			scenario := &config.Scenarios[index]
 			fallback := config.TargetURL
-			if scenario.TargetURL != "" {
-				fallback = targets[scenario.TargetURL]
+			fallbackName := scenario.TargetURL
+			if fallbackName != "" {
+				fallback = targets[fallbackName]
 				if fallback == "" {
-					return config, fmt.Errorf("unknown target %q", scenario.TargetURL)
+					return config, fmt.Errorf("unknown target %q", fallbackName)
 				}
 			}
 			scenario.TargetURL = fallback
-			if err := resolveTargets(scenario.Workflow, fallback, targets); err != nil {
+			if err := resolveTargets(scenario.Workflow, fallback, fallbackName, targets); err != nil {
 				return config, err
 			}
 		}
@@ -310,10 +398,15 @@ func parseRun(body map[string]any, allowed map[string]bool) (runConfig, error) {
 		if config.Workflow, err = parseWorkflow(workflow); err != nil {
 			return config, err
 		}
-		if err := resolveTargets(config.Workflow, config.TargetURL, targets); err != nil {
+		if err := resolveTargets(config.Workflow, config.TargetURL, "", targets); err != nil {
 			return config, err
 		}
 		if config.Agents, err = number(body, "agents", 1, 1); err != nil {
+			return config, err
+		}
+	}
+	if value, present := body["thresholds"]; present {
+		if config.Thresholds, err = parseThresholds(value, config, targets); err != nil {
 			return config, err
 		}
 	}
