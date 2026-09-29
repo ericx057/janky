@@ -8,6 +8,14 @@ Testing an agent-facing service with real LLM agents can be slow, costly, and ha
 
 Janky simulates the workflow traffic; it does not run an LLM or invent actions. It is useful for local development, integration checks, and controlled load experiments.
 
+## Why not use a standard load tester?
+
+Tools such as [k6](https://grafana.com/docs/k6/latest/using-k6/scenarios/) are excellent for generating HTTP traffic and scheduling virtual users or arrival rates; they also support [performance thresholds](https://grafana.com/docs/k6/latest/using-k6/thresholds/). They can script multi-step flows. The difference is the workload model Janky provides out of the box.
+
+For an agent-facing service, the useful unit is often one agent completing a task: a stable agent identity and profile, an ordered sequence of named actions and inputs, an expected response at each step, and a consistent retry policy. Janky treats that sequence as the test case. With a general-purpose load tester, you can build the same behavior in a script, but the script must define and maintain that agent state machine and request envelope itself.
+
+Use Janky when you want to exercise an agent workflow through your HTTP adapter without running real LLMs or writing a custom load-test harness for the workflow. Use k6 or another general-purpose tester when you need its broader protocol support, detailed performance thresholds, or traffic models beyond Janky's scripted HTTP workflows. They solve related problems and can be used at different stages of testing.
+
 ## How an agent run works
 
 For a fleet run, Janky schedules virtual agents at the requested arrival rate and runs up to the configured concurrency. Each agent takes a profile, sends its workflow steps in order, and waits for each response before moving on. Think time and jitter can spread requests out. Unexpected network errors, `429` responses, and `5xx` responses can be retried.
