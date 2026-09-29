@@ -46,6 +46,45 @@ flowchart TD
 
 Each step is a JSON `POST` containing the agent ID, selected profile, workflow ID, action, and input. The target can route different actions through the same endpoint. Janky drains and discards target response bodies, then records status, latency, and retry results.
 
+### How Janky represents an agent
+
+An agent is a simulated identity plus a profile and an ordered workflow. For scenario runs, Janky creates the configured number of agents for each scenario; each gets a profile from that scenario and follows its workflow in order. It does not call an LLM, choose tools, or derive its next action from the target's response.
+
+```mermaid
+flowchart LR
+    S[Scenario: support] --> A[Virtual agent: run-1]
+    S --> B[Virtual agent: run-2]
+    S --> P[Profile pool]
+    S --> W[Ordered workflow]
+    A --> PA[Selected profile]
+    B --> PB[Selected profile]
+    A --> W
+    B --> W
+    W --> X[Step 1: find_ticket]
+    X --> Y[POST action, profile, input, workflow position]
+    Y --> Z{Expected response?}
+    Z -- yes --> N[Advance to next step]
+    Z -- retryable error --> R[Retry within configured limit]
+    Z -- no --> F[Agent finishes as failed]
+    N --> X2[Next workflow step]
+```
+
+For example, this scenario defines the inputs Janky uses to represent each support agent:
+
+```json
+{
+  "name": "support",
+  "agents": 50,
+  "profiles": [{"team": "support", "tier": "standard"}],
+  "workflow": [
+    {"action": "find_ticket", "input": {"ticket": "synthetic-1"}},
+    {"action": "reply", "input": {"text": "Please try again."}}
+  ]
+}
+```
+
+Each target request carries that agent's ID and profile, a workflow ID and step number, and the step's action and input. Janky waits for each response before advancing. Expected status codes determine success; network errors, `429`, and `5xx` responses can be retried according to the run's retry setting. Think time and jitter add pauses between steps. These controls make the traffic repeatable while leaving the service's actual decisions outside Janky.
+
 ## System at a glance
 
 ```mermaid
